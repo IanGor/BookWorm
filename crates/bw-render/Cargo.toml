@@ -1,0 +1,8 @@
+[package]
+name = "bw-render"
+version = "0.1.0"
+edition = "2021"
+description = "Книга → PNG-страницы: эталонный рендер ядра на компьютере"
+
+[dependencies]
+bookworm-core = { path = "../core", features = ["raster"] }

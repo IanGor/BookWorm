@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Reader" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">@color/page</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">always</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:alertDialogTheme">@style/ReaderDialog</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">@bool/light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/light_bars</item>
+    </style>
+
+    <!-- Диалоги — в тех же тёплых тонах, что и страница. -->
+    <style name="ReaderDialog" parent="DialogBase">
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:colorBackground">@color/panel</item>
+        <item name="android:colorBackgroundFloating">@color/panel</item>
+        <item name="android:textColorPrimary">@color/ink</item>
+        <item name="android:textColorSecondary">@color/muted</item>
+        <item name="android:textColorAlertDialogListItem">@color/ink</item>
+    </style>
+
+    <style name="DialogBase" parent="@android:style/Theme.DeviceDefault.Light.Dialog.Alert" />
+</resources>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Палитра Claude для чтения ночью; те же цвета, что у ядра (render::NIGHT). -->
+<resources>
+    <color name="page">#181715</color>
+    <color name="ink">#CFCAC0</color>
+    <color name="muted">#A09D96</color>
+    <color name="panel">#252320</color>
+    <color name="accent">#CC785C</color>
+    <color name="group">#100F0E</color>
+    <color name="cell">#201F1C</color>
+    <color name="separator">#34322D</color>
+    <color name="danger">#E5695A</color>
+    <bool name="light_bars">false</bool>
+</resources>

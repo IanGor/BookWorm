@@ -1,0 +1,16 @@
+[package]
+name = "bookworm-core"
+version = "0.1.0"
+edition = "2021"
+description = "Движок вёрстки BookWorm: разбор FB2/EPUB, типограф, переносы, Кнут — Пласс, страницы"
+
+[features]
+# Растеризация страниц в PNG — только для эталонных тестов на компьютере.
+raster = ["dep:tiny-skia"]
+
+[dependencies]
+encoding_rs = "0.8"
+hyphenation = { version = "0.8", features = ["embed_all"] }
+miniz_oxide = "0.8"
+rustybuzz = "0.20"
+tiny-skia = { version = "0.11", optional = true }

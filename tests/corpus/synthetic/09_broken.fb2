@@ -1,0 +1,17 @@
+﻿
+  <?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:xlink="http://www.w3.org/1999/xlink">
+<description><title-info><genre>prose</genre><author><last-name>Сломанный</last-name></author><book-title>09 Сломанный FB2</book-title><lang>RU</lang><coverpage><image xlink:href="cover.jpg"/></coverpage></title-info></description>
+<body><section><title><p>Ошибки разметки</p></title>
+<p>Неэкранированный амперсанд: Smith & Wesson, AT&T.</p>
+<p>Неизвестный тег: <span class="x">текст в span</span> и <font color="red">font</font>.</p>
+<p>Ссылка xlink:href вместо l:href<a xlink:href="#n1" type="note">1</a>.</p>
+<p>Ссылка на несуществующую сноску<a xlink:href="#n99" type="note">99</a>.</p>
+<p>Картинка без бинарника:</p><image xlink:href="#missing.jpg"/>
+<p>Незакрытый абзац
+<p>Следующий абзац после незакрытого.</p>
+</section><section></section><section><title><p>Раздел только с заголовком</p></title></section>
+<section><p>Раздел без заголовка.</p><p>Атрибут без кавычек: <a l:href=#n1>ссылка</a>.</p></section>
+</body>
+<body name="notes"><section id="n1"><p>Сноска.</p></section><section id="n1"><p>Дубликат id.</p></section></body>
+</FictionBook>

@@ -1,0 +1,25 @@
+BookWorm
+Copyright 2026 IanGor and BookWorm contributors
+
+Лицензия проекта — Apache License 2.0 (файл LICENSE).
+
+В репозиторий входят и используются сторонние компоненты:
+
+Шрифты (fonts/), все под SIL Open Font License 1.1; тексты лицензий лежат рядом:
+  - Literata — OFL-literata.txt
+  - Charis SIL — OFL-charissil.txt
+  - PT Sans, PT Serif (ParaType) — OFL-ptserif.txt
+  - Liberation Mono (Red Hat, Google) — OFL-liberation.txt
+
+Библиотеки Rust (список — `cargo metadata`; все под разрешительными лицензиями:
+MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, Zlib, Unlicense, 0BSD, Unicode-3.0):
+  - rustybuzz (шейпинг), encoding_rs (кодировки), miniz_oxide (zip),
+    hyphenation (словари переносов TeX hyph-utf8 под их собственными разрешительными лицензиями),
+    tiny-skia (растеризация, BSD-3-Clause), jni.
+
+Книги в репозиторий и в приложение не входят. Файлы tests/corpus/synthetic/ — тестовые
+данные, сгенерированные скриптом tools/gen_corpus.py. Тексты для замеров вёрстки
+(tools/real_corpus.py) скачиваются отдельно из общественного достояния и не публикуются.
+
+Поиск сведений о книге (необязательный, по кнопке) обращается к открытым сервисам
+Google Books и Open Library; ключей API в проекте нет.

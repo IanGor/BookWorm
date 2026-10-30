@@ -1,0 +1,13 @@
+[package]
+name = "bookworm-android"
+version = "0.1.0"
+edition = "2021"
+description = "Мост JNI между ядром BookWorm и приложением для Android"
+
+[lib]
+name = "bookworm"
+crate-type = ["cdylib"]
+
+[dependencies]
+bookworm-core = { path = "../core", features = ["raster"] }
+jni = "0.21"
