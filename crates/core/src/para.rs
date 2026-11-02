@@ -58,6 +58,10 @@ pub struct PGlyph {
     pub id: u16,
     pub x: f32,
     pub y: f32,
+    /// Source character range; discretionary hyphens have no source text.
+    pub source: Option<(u32, u32)>,
+    pub left: f32,
+    pub right: f32,
 }
 
 /// Глифы одного начертания и кегля, координаты относительно начала строки и базовой линии.
@@ -127,6 +131,7 @@ struct Run {
     strike: bool,
     note: Option<String>,
     glyphs: Vec<Glyph>,
+    end: u32,
     hyphen: Vec<Glyph>,
 }
 
@@ -380,7 +385,7 @@ impl Para<'_> {
     fn piece(&mut self, chars: &[char], start: usize, span: &Span, fmt: (usize, f32, f32), lang: Lang, brk: &[Option<Brk>]) {
         let (face, size, dy) = fmt;
         let text: String = chars.iter().collect();
-        let glyphs = self.fonts.faces[face].shape(&text, size, lang);
+        let mut glyphs = self.fonts.faces[face].shape(&text, size, lang);
         let hyphen = self.fonts.metrics(face, size).hyphen;
 
         let mut offs = Vec::with_capacity(chars.len());
@@ -400,9 +405,13 @@ impl Para<'_> {
                 }
             }
         }
+        // Keep source positions through bionic runs, shaping and line breaking.
+        for g in &mut glyphs {
+            g.cluster = start + offs.partition_point(|&off| off < g.cluster);
+        }
         let total = glyphs.len();
         let run = self.runs.len();
-        self.runs.push(Run { face, size, dy, strike: span.style.strike, note: span.note.clone(), glyphs, hyphen });
+        self.runs.push(Run { face, size, dy, strike: span.style.strike, note: span.note.clone(), glyphs, end: (start + chars.len()) as u32, hyphen });
 
         if start > 0 {
             if let Some(bk) = brk[start] {
@@ -754,7 +763,7 @@ impl Para<'_> {
                             cur = run;
                         }
                         let (sc, tr) = if self.runs[run].face == MONO { (1.0, 0.0) } else { (xscale, track) };
-                        x = self.emit(&mut line, run, &self.runs[run].glyphs[g0..g1], x, sc, tr);
+                        x = self.emit(&mut line, run, &self.runs[run].glyphs[g0..g1], x, sc, tr, true);
                     }
                     Item::Glue { w, st, sh, fil, .. } => {
                         if !fil {
@@ -769,7 +778,7 @@ impl Para<'_> {
                 if cur != hrun {
                     line.runs.push(self.glyph_run(hrun, x, xscale));
                 }
-                x = self.emit(&mut line, hrun, &self.runs[hrun].hyphen, x, xscale, 0.0);
+                x = self.emit(&mut line, hrun, &self.runs[hrun].hyphen, x, xscale, 0.0, false);
             }
             line.width = x;
             let off = match self.st.align {
@@ -800,13 +809,20 @@ impl Para<'_> {
     }
 
     /// Глифы в строку: `scale` — масштаб по ширине, `track` — добавка после глифа в долях кегля.
-    fn emit(&self, line: &mut Line, run: usize, glyphs: &[Glyph], mut x: f32, scale: f32, track: f32) -> f32 {
+    fn emit(&self, line: &mut Line, run: usize, glyphs: &[Glyph], mut x: f32, scale: f32, track: f32, source: bool) -> f32 {
         let r = &self.runs[run];
         let (dy, add) = (r.dy, track * r.size);
         if let Some(gr) = line.runs.last_mut() {
             for g in glyphs {
-                gr.glyphs.push(PGlyph { id: g.id, x: x + g.dx * scale, y: dy + g.dy });
-                x += g.advance * scale + add;
+                let right = x + g.advance * scale + add;
+                let range = source.then(|| {
+                    let next = r.glyphs.partition_point(|next| next.cluster <= g.cluster);
+                    let end = r.glyphs.get(next).map_or(r.end, |next| next.cluster as u32);
+                    (g.cluster as u32, end)
+                });
+                gr.glyphs.push(PGlyph { id: g.id, x: x + g.dx * scale, y: dy + g.dy,
+                    source: range, left: x, right });
+                x = right;
             }
             gr.x1 = x;
         }

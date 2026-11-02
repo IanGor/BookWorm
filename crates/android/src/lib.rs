@@ -249,6 +249,12 @@ pub extern "system" fn Java_app_bookworm_Core_blockText<'l>(mut env: JNIEnv<'l>,
 }
 
 #[no_mangle]
+pub extern "system" fn Java_app_bookworm_Core_selectionCells<'l>(mut env: JNIEnv<'l>, _: JObject<'l>, h: jlong, page: jint, block: jint) -> jstring {
+    let text = guard(None, || Ok(Some(book(h)?.selection_cells(page.max(0) as usize, block as usize))));
+    java_str(&mut env, text)
+}
+
+#[no_mangle]
 pub extern "system" fn Java_app_bookworm_Core_typographyReport<'l>(mut env: JNIEnv<'l>, _: JObject<'l>, h: jlong, block: jint) -> jstring {
     let text = guard(None, || Ok(book(h)?.typography_report(block as usize)));
     java_str(&mut env, text)

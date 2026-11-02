@@ -191,6 +191,30 @@ impl Book {
         hit
     }
 
+    /// Selection rectangles in page/chapter coordinates, offsets in Android UTF-16 units.
+    pub fn selection_cells(&self, n: usize, block: usize) -> String {
+        let Some(page) = self.page(n) else { return String::new() };
+        let Some(b) = self.doc.blocks.get(block) else { return String::new() };
+        let text = b.text();
+        let mut utf16 = vec![0];
+        for c in text.chars() {
+            utf16.push(utf16.last().unwrap() + c.len_utf16());
+        }
+        let mut out = String::new();
+        for l in page.lines.iter().filter(|l| l.block == block) {
+            for r in &l.runs {
+                for g in &r.glyphs {
+                    if let Some((a, b)) = g.source {
+                        out.push_str(&format!("{} {} {} {} {} {}\n", utf16[a as usize], utf16[b as usize],
+                            l.x + g.left, l.baseline - r.size * 0.9,
+                            l.x + g.right, l.baseline + r.size * 0.3));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Контекст для воспроизведения ошибки без доступа к телефону.
     pub fn typography_report(&self, block: usize) -> Option<String> {
         let selected = self.doc.blocks.get(block)?;
@@ -255,6 +279,65 @@ mod tests {
             assert!(report.contains(expected), "нет данных: {expected}");
         }
         assert!(b.typography_report(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn selection_tracks_source_through_bionic_hyphenation_and_utf16() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts");
+        let sample = include_str!("../../../tests/fixtures/selection-ru.txt").trim();
+        for scroll in [false, true] {
+            for bionic in [false, true] {
+                let fonts = FontSet::from_prefix(&format!("{root}/PTSerif"), &format!("{root}/LiberationMono-Regular.ttf")).unwrap();
+                let g = Geometry { width: 1080.0, height: 2400.0, margin_x: 88.0,
+                    margin_y: 150.0, font_size: 48.250492, leading: 1.3347014, scroll, bionic };
+                // Extra blocks check block filtering; emoji checks Android's UTF-16 offsets.
+                let xml = format!("<FictionBook><body><p>До.</p><p>{sample} 😀</p><p>После.</p></body></FictionBook>");
+                let b = Book::open(xml.as_bytes(), fonts, g).unwrap();
+                let text = b.doc.blocks[1].text();
+                assert_eq!(text.replace('\u{a0}', " "), format!("{} 😀", sample.replace('\u{a0}', " ")));
+                let chars: Vec<char> = text.chars().collect();
+                let mut covered = vec![false; chars.len()];
+                let mut hyphenated = false;
+                let mut faces = std::collections::HashSet::new();
+                for n in 0..b.page_count() {
+                    let cells = b.selection_cells(n, 1);
+                    assert_eq!(cells.lines().count(), b.page(n).unwrap().lines.iter()
+                        .filter(|l| l.block == 1).flat_map(|l| &l.runs)
+                        .flat_map(|r| &r.glyphs).filter(|g| g.source.is_some()).count());
+                    for row in cells.lines() {
+                        let v: Vec<&str> = row.split_whitespace().collect();
+                        let a: usize = v[0].parse().unwrap();
+                        let z: usize = v[1].parse().unwrap();
+                        let utf16: Vec<u16> = text.encode_utf16().collect();
+                        assert!(z > a && z <= utf16.len());
+                        assert!(String::from_utf16(&utf16[a..z]).is_ok());
+                        assert!(v[4].parse::<f32>().unwrap() >= v[2].parse::<f32>().unwrap());
+                    }
+                    for l in b.page(n).unwrap().lines.iter().filter(|l| l.block == 1) {
+                        hyphenated |= l.hyphen;
+                        for r in &l.runs {
+                            faces.insert(r.face);
+                            for glyph in &r.glyphs {
+                                if let Some((a, z)) = glyph.source {
+                                    assert!(a < z && z as usize <= chars.len());
+                                    covered[a as usize..z as usize].fill(true);
+                                }
+                            }
+                        }
+                        if l.hyphen {
+                            assert!(l.runs.last().unwrap().glyphs.last().unwrap().source.is_none());
+                        }
+                    }
+                }
+                assert!(hyphenated, "fixture must exercise discretionary hyphens");
+                if bionic { assert!(faces.len() >= 2); }
+                for (i, c) in chars.iter().enumerate() {
+                    assert!(c.is_whitespace() || covered[i], "missing source character {i}: {c}");
+                }
+                assert!(b.selection_cells(usize::MAX, 1).is_empty());
+                assert!(b.selection_cells(0, usize::MAX).is_empty());
+            }
+        }
     }
 
     #[test]

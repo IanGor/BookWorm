@@ -14,8 +14,8 @@ android {
         // Canvas.drawGlyphs (API 31) понадобится, когда отрисовка глифов переедет в Android.
         minSdk = 31
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.5.2"
+        versionCode = 10
+        versionName = "0.5.3"
         // Телефон — arm64; для эмулятора: -Pabis=arm64-v8a,x86_64
         ndk { abiFilters += (findProperty("abis") as String? ?: "arm64-v8a").split(",") }
     }
@@ -33,10 +33,16 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    sourceSets["test"].resources.srcDir("../../tests/fixtures")
+
     // Шрифты и книги ядро читает с диска; не сжимаем, чтобы копировать быстро.
     androidResources { noCompress += listOf("ttf", "fb2", "zip") }
 }
 
 kotlin {
     compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }

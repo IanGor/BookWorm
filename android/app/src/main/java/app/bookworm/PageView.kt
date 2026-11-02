@@ -27,17 +27,20 @@ class PageView(ctx: Context, private val listener: Listener) : View(ctx) {
         textAlign = Paint.Align.CENTER
     }
 
+    private var longPressed = false
+
     private val gestures = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onDown(e: MotionEvent) = true
+        override fun onDown(e: MotionEvent): Boolean { longPressed = false; return true }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             listener.onTap(e.x, e.y)
             return true
         }
 
-        override fun onLongPress(e: MotionEvent) { listener.onLongPress(e.x, e.y) }
+        override fun onLongPress(e: MotionEvent) { longPressed = true; listener.onLongPress(e.x, e.y) }
 
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+            if (longPressed) return true
             if (abs(vx) < abs(vy) || abs(vx) < 300) return false
             listener.onSwipe(vx < 0)
             return true

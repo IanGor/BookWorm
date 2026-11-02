@@ -47,18 +47,23 @@ class StripView(ctx: Context, private val host: Host) : View(ctx) {
     private var lastY = 0
     private val settle = Runnable { host.onSettled(chapter, top) }
 
+    private var longPressed = false
+
     private val gestures = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
+            longPressed = false
             scroller.forceFinished(true)
             return true
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
+            if (longPressed) return true
             scrollBy(dy)
             return true
         }
 
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+            if (longPressed) return true
             lastY = 0
             scroller.fling(0, 0, 0, -vy.toInt(), 0, 0, Int.MIN_VALUE / 2, Int.MAX_VALUE / 2)
             postInvalidateOnAnimation()
@@ -71,6 +76,7 @@ class StripView(ctx: Context, private val host: Host) : View(ctx) {
         }
 
         override fun onLongPress(e: MotionEvent) {
+            longPressed = true
             removeCallbacks(settle)
             host.onLongPress(e.x, e.y)
         }

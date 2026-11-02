@@ -73,6 +73,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
     // Поля ниже меняются только в главном потоке.
     private var book: File? = null
     private var pendingReport: String? = null
+    private var selectionView: SelectionView? = null
     /** Настройки, с которыми книга свёрстана: изменились — переверстываем при возврате из настроек. */
     private var openedKey = ""
     private var pendingBook: File? = null
@@ -207,6 +208,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
     }
 
     override fun onResize(width: Int, height: Int) {
+        selectionView?.finish()
         // Окно меняет размер, пока скрываются системные панели: верстаем под окончательный.
         main.removeCallbacks(reopenOnResize)
         main.postDelayed(reopenOnResize, 150)
@@ -228,6 +230,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
 
     /** Открывает (или переверстывает после смены настроек) книгу на сохранённом месте. */
     private fun open(file: File) {
+        selectionView?.finish()
         val w = root.width
         val h = root.height
         if (w == 0) return
@@ -350,6 +353,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
     // ---- Страницы ----
 
     private fun go(target: Int) {
+        selectionView?.finish()
         if (count == 0 || target < 0 || target >= count || target == page) return
         if (chromeShown) hideChrome()
         page = target
@@ -465,6 +469,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
 
     /** На экран вниз (или вверх) с запасом в пару строк, чтобы не терять нить. */
     private fun scrollScreen(forward: Boolean) {
+        selectionView?.finish()
         val step = root.height * 0.85f
         stripView.scrollBy(if (forward) step else -step)
     }
@@ -489,6 +494,8 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         if (count == 0 || chromeShown) return
         val g = gen
         val (part, cy) = if (scrollMode) stripPoint(y) else page to y
+        val origin = stripView.chapter to stripView.top
+        val originPage = page
         val configuration = "Шрифт: ${settings.family}; ступень: ${settings.stepPx}; тема: ${settings.theme}; " +
             "ночной режим: $night; бионическое чтение: ${settings.bionic}; прокрутка: $scrollMode"
         worker.execute {
@@ -496,24 +503,20 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
             val block = Core.blockAt(handle, part, x, cy)
             val text = Core.blockText(handle, block) ?: return@execute
             if (text.isBlank()) return@execute
+            val cells = Core.selectionCells(handle, part, block) ?: return@execute
             val diagnostics = Core.typographyReport(handle, block) ?: return@execute
             main.post {
-                if (g != gen || isDestroyed) return@post
-                val selectable = label(this, text, 18f, fg()).apply {
-                    setPadding(dp(20), dp(12), dp(20), dp(12))
-                    setTextIsSelectable(true)
-                }
-                AlertDialog.Builder(this)
-                    .setTitle("Ошибка оформления")
-                    .setMessage("Выделите фрагмент долгим нажатием. Без выделения в отчёт попадёт весь абзац.")
-                    .setView(ScrollView(this).apply { addView(selectable) })
-                    .setNegativeButton("Отмена", null)
-                    .setPositiveButton("Описать ошибку") { _, _ ->
-                        val a = minOf(selectable.selectionStart, selectable.selectionEnd)
-                        val b = maxOf(selectable.selectionStart, selectable.selectionEnd)
-                        val selected = if (a >= 0 && b > a) text.substring(a, b) else text
-                        describeTypography(file, selected, diagnostics, configuration)
-                    }.show()
+                if (g != gen || isDestroyed || !hasWindowFocus()) return@post
+                if ((scrollMode && origin != (stripView.chapter to stripView.top)) || (!scrollMode && originPage != page)) return@post
+                val selection = TextSelection.parse(text, cells, cy - y)
+                if (selection.cells.isEmpty()) return@post
+                selectionView?.finish()
+                val overlay = SelectionView(this, selection,
+                    report = { selected -> describeTypography(file, selected, diagnostics, configuration) },
+                    closed = { selectionView?.let { root.removeView(it) }; selectionView = null })
+                selectionView = overlay
+                root.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                overlay.begin(x, y)
             }
         }
     }
@@ -902,6 +905,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
      * пошёл по вертикали — это свайп края: странице посылается отмена, дальше жест наш.
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (selectionView != null) { edge = null; return super.dispatchTouchEvent(ev) }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val zone = root.width * EDGE_ZONE
@@ -998,6 +1002,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         super.onConfigurationChanged(c)
         val dark = isNight()
         if (dark == night) return
+        selectionView?.finish()
         night = dark
         val bg = getColor(R.color.page)
         window.setBackgroundDrawable(ColorDrawable(bg))
@@ -1049,6 +1054,11 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
     private fun fg() = getColor(R.color.ink)
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
+
+    override fun onPause() {
+        selectionView?.finish()
+        super.onPause()
+    }
 
     override fun onDestroy() {
         super.onDestroy()
