@@ -2,7 +2,7 @@
 //!
 //! bw-render КНИГА [--out DIR] [--pages A-B] [--size PX] [--night]
 //!                 [--font ПРЕФИКС] [--mono ФАЙЛ] [--note ID]
-//!                 [--family ГАРНИТУРА] [--scroll]
+//!                 [--family ГАРНИТУРА] [--scroll] [--bionic]
 //! --family берёт гарнитуру из папки fonts/ (Literata, PT Serif, Charis SIL, PT Sans);
 //! --size — ступень размера (кегль опорного шрифта), кегль гарнитуры подбирается по высоте строчных.
 //! Пример: bw-render tests/corpus/synthetic/01_typography_ru.fb2 --pages 1-5
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 const USAGE: &str =
-    "bw-render КНИГА [--out DIR] [--pages A-B] [--size PX] [--night] [--font ПРЕФИКС] [--mono ФАЙЛ] [--note ID] [--family ИМЯ] [--scroll]";
+    "bw-render КНИГА [--out DIR] [--pages A-B] [--size PX] [--night] [--font ПРЕФИКС] [--mono ФАЙЛ] [--note ID] [--family ИМЯ] [--scroll] [--bionic]";
 const DEFAULT_FONT: &str = "/usr/share/fonts/noto/NotoSerif";
 const DEFAULT_MONO: &str = "/usr/share/fonts/liberation/LiberationMono-Regular.ttf";
 
@@ -27,6 +27,7 @@ struct Args {
     note: Option<String>,
     family: Option<String>,
     scroll: bool,
+    bionic: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -41,6 +42,7 @@ fn parse_args() -> Result<Args, String> {
         note: None,
         family: None,
         scroll: false,
+        bionic: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -53,6 +55,7 @@ fn parse_args() -> Result<Args, String> {
             "--note" => a.note = Some(it.next().ok_or("--note: нужен id сноски")?),
             "--family" => a.family = Some(it.next().ok_or("--family: нужно имя гарнитуры")?),
             "--scroll" => a.scroll = true,
+            "--bionic" => a.bionic = true,
             "--pages" => {
                 let s = it.next().ok_or("--pages: нужен диапазон A-B")?;
                 let (x, y) = s.split_once('-').unwrap_or((s.as_str(), s.as_str()));
@@ -96,7 +99,8 @@ fn run() -> Result<(), String> {
         }
         None => FontSet::from_prefix(&a.font, &a.mono)?,
     };
-    let g = layout::Geometry::new(1080.0, 2400.0, a.size, fonts.faces[0].x_height, a.scroll);
+    let mut g = layout::Geometry::new(1080.0, 2400.0, a.size, fonts.faces[0].x_height, a.scroll);
+    g.bionic = a.bionic;
     let t = Instant::now();
     let book = Book::open(&bytes, fonts, g)?;
     let doc = &book.doc;

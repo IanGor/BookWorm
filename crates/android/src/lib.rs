@@ -94,7 +94,8 @@ pub extern "system" fn Java_app_bookworm_Core_lastError<'l>(mut env: JNIEnv<'l>,
 
 /// Открывает и верстает книгу. 0 — ошибка (см. lastError).
 /// `fonts` — четыре строки `путь|насыщенность` (обычный, курсив, жирный, жирный курсив),
-/// `step` — ступень размера (кегль опорного шрифта при ширине 1080), `scroll` — прокрутка.
+/// `step` — ступень размера (кегль опорного шрифта при ширине 1080), `scroll` — прокрутка,
+/// `bionic` — выделение начальной трети слов.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_app_bookworm_Core_open<'l>(
@@ -107,6 +108,7 @@ pub extern "system" fn Java_app_bookworm_Core_open<'l>(
     height: jint,
     step: f32,
     scroll: jboolean,
+    bionic: jboolean,
 ) -> jlong {
     guard(0, || {
         let path = rust_str(&mut env, &path)?;
@@ -116,7 +118,8 @@ pub extern "system" fn Java_app_bookworm_Core_open<'l>(
         let specs: Vec<FaceSpec> = fonts.lines().filter_map(FaceSpec::parse).collect();
         let specs: [FaceSpec; 4] = specs.try_into().map_err(|_| "нужно четыре начертания шрифта")?;
         let fonts = FontSet::from_specs(&specs, &mono)?;
-        let g = Geometry::new(width as f32, height as f32, step, fonts.faces[0].x_height, scroll == JNI_TRUE);
+        let mut g = Geometry::new(width as f32, height as f32, step, fonts.faces[0].x_height, scroll == JNI_TRUE);
+        g.bionic = bionic == JNI_TRUE;
         let book = Book::open(&bytes, fonts, g)?;
         Ok(Box::into_raw(Box::new(Mutex::new(book))) as jlong)
     })
@@ -232,6 +235,23 @@ pub extern "system" fn Java_app_bookworm_Core_meta<'l>(mut env: JNIEnv<'l>, _: J
 pub extern "system" fn Java_app_bookworm_Core_title<'l>(mut env: JNIEnv<'l>, _: JObject<'l>, h: jlong) -> jstring {
     let t = guard(None, || Ok(Some(book(h)?.doc.title.clone())));
     java_str(&mut env, t)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_app_bookworm_Core_blockAt<'l>(_: JNIEnv<'l>, _: JObject<'l>, h: jlong, page: jint, x: f32, y: f32) -> jint {
+    guard(-1, || Ok(book(h)?.hit(page.max(0) as usize, x, y).block.map_or(-1, |b| b as jint)))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_app_bookworm_Core_blockText<'l>(mut env: JNIEnv<'l>, _: JObject<'l>, h: jlong, block: jint) -> jstring {
+    let text = guard(None, || Ok(book(h)?.doc.blocks.get(block as usize).map(|b| b.text())));
+    java_str(&mut env, text)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_app_bookworm_Core_typographyReport<'l>(mut env: JNIEnv<'l>, _: JObject<'l>, h: jlong, block: jint) -> jstring {
+    let text = guard(None, || Ok(book(h)?.typography_report(block as usize)));
+    java_str(&mut env, text)
 }
 
 #[no_mangle]

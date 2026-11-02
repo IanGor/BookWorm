@@ -17,6 +17,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.CheckBox
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -37,6 +38,7 @@ class BookInfoActivity : ThemedActivity() {
     private lateinit var searchButton: TextView
     private lateinit var scroll: ScrollView
     private lateinit var content: LinearLayout
+    private lateinit var finishedField: CheckBox
 
     /** Обложка, выбранная в поиске: сохранится по «Готово». */
     private var newCover: ByteArray? = null
@@ -52,6 +54,13 @@ class BookInfoActivity : ThemedActivity() {
 
         titleField = field("Название", InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)
         authorField = field("Автор", InputType.TYPE_TEXT_FLAG_CAP_WORDS)
+        finishedField = CheckBox(this).apply {
+            text = "Прочитано"
+            setTextColor(res(R.color.ink))
+            buttonTintList = android.content.res.ColorStateList.valueOf(res(R.color.accent))
+            isChecked = state?.getBoolean("finished") ?: books.isFinished(book)
+            minHeight = dp(48)
+        }
         coverBox = FrameLayout(this)
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         searchButton = label(this, "Найти в сети", 17f, 0xFFFFFFFF.toInt(), 600).apply {
@@ -70,6 +79,7 @@ class BookInfoActivity : ThemedActivity() {
             addView(coverBox, LinearLayout.LayoutParams(dp(132), -2).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(12) })
             addView(header("Книга"))
             addView(card(titleField, authorField))
+            addView(finishedField, LinearLayout.LayoutParams(-1, -2))
             addView(searchButton, LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(16) })
             addView(results, LinearLayout.LayoutParams(-1, -2))
             addView(footer("Поиск идёт по названию и автору из полей выше — в сеть (Google Books, затем Open Library) уходят только они. Выбранный вариант подставляет название, автора и обложку; их можно поправить руками."))
@@ -250,11 +260,18 @@ class BookInfoActivity : ThemedActivity() {
         val t = titleField.text.toString().trim().ifEmpty { Books.cleanTitle(book) }
         val a = authorField.text.toString().trim()
         val cover = newCover
+        val finished = finishedField.isChecked
         worker.execute {
             if (cover != null) books.saveCover(book, cover) else if (dropCover) books.coverFile(book).delete()
             books.setInfo(book, t, a)
+            books.setFinished(book, finished)
             main.post { finish() }
         }
+    }
+
+    override fun onSaveInstanceState(out: Bundle) {
+        out.putBoolean("finished", finishedField.isChecked)
+        super.onSaveInstanceState(out)
     }
 
     // ---- Элементы ----

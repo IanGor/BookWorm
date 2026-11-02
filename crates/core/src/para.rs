@@ -28,11 +28,12 @@ pub struct ParaStyle {
     /// Поля абзаца внутри текстовой области.
     pub left: f32,
     pub right: f32,
-    /// Дополнительный отступ строк после первой (продолжение строки стиха).
+    /// Дополнительный отступ строк после первой (отрицательный text-indent в CSS).
     pub hanging: f32,
     pub hyphenate: bool,
     pub italic: bool,
     pub bold: bool,
+    pub bionic: bool,
 }
 
 impl ParaStyle {
@@ -47,6 +48,7 @@ impl ParaStyle {
             hyphenate: true,
             italic: false,
             bold: false,
+            bionic: false,
         }
     }
 }
@@ -221,6 +223,13 @@ impl Para<'_> {
             }
         }
         let n = chars.len();
+        let mut emphasis = if st.bionic { bionic_prefixes(&chars) } else { vec![false; n] };
+        for (i, &si) in owner.iter().enumerate() {
+            let s = &spans[si];
+            if st.bold || s.style.bold || s.style.code || s.style.sup || s.style.sub || s.note.is_some() {
+                emphasis[i] = false;
+            }
+        }
         let mut brk: Vec<Option<Brk>> = vec![None; n + 1];
         self.mark_breaks(&chars, lang, hy, &mut brk);
 
@@ -278,10 +287,16 @@ impl Para<'_> {
                 _ => {
                     let si = owner[i];
                     let mut j = i;
-                    while j < n && owner[j] == si && !matches!(chars[j], ' ' | NBSP | NNBSP | ZWSP | SHY) {
+                    while j < n
+                        && owner[j] == si
+                        && emphasis[j] == emphasis[i]
+                        && !matches!(chars[j], ' ' | NBSP | NNBSP | ZWSP | SHY)
+                    {
                         j += 1;
                     }
-                    self.piece(&chars[i..j], i, &spans[si], fmt[si], lang, &brk);
+                    let (face, size, dy) = fmt[si];
+                    let face = if emphasis[i] { self.fonts.bionic_face(face) } else { face };
+                    self.piece(&chars[i..j], i, &spans[si], (face, size, dy), lang, &brk);
                     i = j;
                 }
             }
@@ -552,6 +567,17 @@ impl Para<'_> {
                 if !(-1.0..=tol).contains(&r) {
                     continue;
                 }
+                // Аварийный проход может пожертвовать началом абзаца ради остальных строк.
+                // Не оставляем огрызок, если следующая допустимая точка ещё помещается.
+                if !forced && self.sw[b] - self.sw[a.start] + pw < 0.6 * lw {
+                    if let Some((next, (w, _, _))) = ((b + 1)..self.items.len())
+                        .find_map(|i| self.breakpoint(i).map(|bk| (i, bk)))
+                    {
+                        if self.sw[next] - self.sw[a.start] + w <= lw {
+                            continue;
+                        }
+                    }
+                }
                 // Аварийное растяжение только делает строку допустимой; некрасивость считаем
                 // по настоящей разреженности, иначе алгоритм не отличит плохую строку от хорошей.
                 let real = self.space_ratio(a.start, b, pw, lw).min(20.0);
@@ -792,7 +818,135 @@ fn is_letter(c: char) -> bool {
     c.is_alphabetic() || is_combining(c)
 }
 
+/// Первая треть букв с округлением вверх, как в образце. Считаем по целому
+/// абзацу до разбиения на строки и фрагменты: перенос не создаёт новое слово.
+fn bionic_prefixes(chars: &[char]) -> Vec<bool> {
+    let mut out = vec![false; chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_alphabetic() || is_combining(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && (is_letter(chars[i]) || chars[i] == SHY) {
+            i += 1;
+        }
+        let letters = chars[start..i].iter().filter(|&&c| c != SHY && !is_combining(c)).count();
+        let count = letters.div_ceil(3);
+        let mut seen = 0;
+        for k in start..i {
+            if chars[k] != SHY && !is_combining(chars[k]) {
+                seen += 1;
+            }
+            out[k] = seen <= count;
+        }
+    }
+    out
+}
+
 fn is_url(tok: &[char]) -> bool {
     let s: String = tok.iter().collect();
     s.contains("://") || s.contains("www.") || (s.contains('@') && s.contains('.')) || s.contains(":\\")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::font::{self, BOLD, ITALIC, REGULAR};
+    use crate::model::InlineStyle;
+
+    fn fonts() -> FontSet {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts");
+        let files = ["Literata.ttf", "Literata-Italic.ttf"].map(|f| format!("{root}/{f}"));
+        let family = font::families(&files).remove(0);
+        FontSet::from_specs(&family.faces, &format!("{root}/LiberationMono-Regular.ttf")).unwrap()
+    }
+
+    fn highlighted(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mask = bionic_prefixes(&chars);
+        chars.into_iter().zip(mask).filter_map(|(c, yes)| yes.then_some(c)).collect()
+    }
+
+    #[test]
+    fn emergency_layout_does_not_isolate_opening_word() {
+        let fonts = fonts();
+        let hy = Hyphenator::new();
+        let g = crate::layout::Geometry::new(576.0, 1280.0, 46.0, fonts.faces[REGULAR].x_height, false);
+        let mut st = ParaStyle::body(g.font_size);
+        st.indent = 1.3 * st.size;
+        st.bionic = true;
+        for n in [2, 3, 10] {
+            let text = format!("Путешествие на юго-запад от Москвы было совсем не таким. {}", "Поезд двигался между станциями, пассажиры смотрели в окна и обсуждали дальнейший маршрут. ".repeat(n));
+            let mut spans = vec![Span::plain(&text)];
+            crate::typo::apply(&mut spans, Lang::Ru);
+            let lines = layout_paragraph(&spans, Lang::Ru, &st, g.text_width(), &fonts, &hy);
+            assert!(lines[1].start > 12, "короткая первая строка при {n} повторениях: offset={}", lines[1].start);
+        }
+    }
+
+    #[test]
+    fn prefixes_count_letters_and_keep_accents() {
+        assert_eq!(highlighted("я бы кот текст книга читать читатель самокопанием"), "ябктекнчичитсамо");
+        assert_eq!(highlighted("«Клайда», hello-world! 12345"), "Клhewo");
+        assert_eq!(highlighted("а\u{301}збука"), "а\u{301}з");
+        assert_eq!(highlighted("само\u{ad}копанием"), "само\u{ad}");
+    }
+
+    #[test]
+    fn bionic_uses_semibold_and_preserves_author_styles() {
+        let fonts = fonts();
+        let hy = Hyphenator::new();
+        let mut st = ParaStyle::body(40.0);
+        st.align = Align::Left;
+        let spans = [
+            Span::plain("читатель "),
+            Span { style: InlineStyle { italic: true, ..Default::default() }, ..Span::plain("читатель ") },
+            Span { style: InlineStyle { bold: true, ..Default::default() }, ..Span::plain("читатель ") },
+            Span { style: InlineStyle { code: true, ..Default::default() }, ..Span::plain("читатель ") },
+            Span { note: Some("n1".into()), ..Span::plain("сноска") },
+        ];
+        let plain = layout_paragraph(&spans, Lang::Ru, &st, 2400.0, &fonts, &hy);
+        assert!(plain[0].runs.iter().all(|r| (r.face as usize) < 5));
+        st.bionic = true;
+        let lines = layout_paragraph(&spans, Lang::Ru, &st, 2400.0, &fonts, &hy);
+        let faces: Vec<usize> = lines[0].runs.iter().map(|r| r.face as usize).collect();
+        assert_eq!(faces, [
+            fonts.bionic_face(REGULAR), REGULAR, fonts.bionic_face(ITALIC), ITALIC, BOLD, MONO, REGULAR,
+        ]);
+        let coords = fonts.faces[fonts.bionic_face(REGULAR)].ttf.variation_coordinates();
+        assert_ne!(coords, fonts.faces[REGULAR].ttf.variation_coordinates());
+        assert_ne!(coords, fonts.faces[BOLD].ttf.variation_coordinates());
+        assert_eq!(lines[0].runs[0].glyphs.len(), 3);
+        assert_eq!(lines[0].runs[1].glyphs.len(), 5);
+        assert_eq!(lines[0].runs.last().unwrap().note.as_deref(), Some("n1"));
+        assert!(lines[0].runs.iter().all(|r| r.x0.is_finite() && r.x1 >= r.x0));
+    }
+
+    #[test]
+    fn prefix_does_not_restart_at_span_or_line_breaks() {
+        let fonts = fonts();
+        let hy = Hyphenator::new();
+        let mut st = ParaStyle::body(40.0);
+        st.align = Align::Left;
+        st.bionic = true;
+        let spans = [
+            Span::plain("само"),
+            Span { style: InlineStyle { italic: true, ..Default::default() }, ..Span::plain("копанием") },
+        ];
+        let lines = layout_paragraph(&spans, Lang::Ru, &st, 900.0, &fonts, &hy);
+        assert_eq!(lines[0].runs.len(), 2);
+        assert_eq!(lines[0].runs[0].face as usize, fonts.bionic_face(REGULAR));
+        assert_eq!(lines[0].runs[1].face as usize, ITALIC);
+
+        let mut glyphs = fonts.faces[fonts.bionic_face(REGULAR)].shape("необы", st.size, Lang::Ru);
+        glyphs.extend(fonts.faces[REGULAR].shape("кно-", st.size, Lang::Ru));
+        let width = glyphs.iter().map(|g| g.advance).sum::<f32>() + 1.0;
+        let lines = layout_paragraph(&[Span::plain("необыкно\u{ad}венно")], Lang::Ru, &st, width, &fonts, &hy);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].hyphen);
+        assert_eq!(lines[1].start, 9);
+        assert!(lines[1].runs.iter().all(|r| r.face as usize == REGULAR));
+    }
 }

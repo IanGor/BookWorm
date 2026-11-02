@@ -14,8 +14,8 @@ android {
         // Canvas.drawGlyphs (API 31) понадобится, когда отрисовка глифов переедет в Android.
         minSdk = 31
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.5.0"
+        versionCode = 9
+        versionName = "0.5.2"
         // Телефон — arm64; для эмулятора: -Pabis=arm64-v8a,x86_64
         ndk { abiFilters += (findProperty("abis") as String? ?: "arm64-v8a").split(",") }
     }

@@ -24,6 +24,8 @@ pub struct Geometry {
     pub leading: f32,
     /// Непрерывная прокрутка: глава — одна длинная полоса без разбиения на страницы.
     pub scroll: bool,
+    /// Выделять начальную треть слов более плотным начертанием.
+    pub bionic: bool,
 }
 
 /// Опорная высота строчных (Noto Serif, доли em): у шрифта с такой высотой
@@ -45,6 +47,7 @@ impl Geometry {
             font_size,
             leading: 1.4,
             scroll: false,
+            bionic: false,
         }
     }
 
@@ -64,6 +67,7 @@ impl Geometry {
             font_size,
             leading: 1.4 * nominal / font_size,
             scroll,
+            bionic: false,
         }
     }
 
@@ -230,6 +234,7 @@ pub(crate) fn block_style(b: &Block, g: &Geometry) -> BlockStyle {
     let fs = g.font_size;
     let w = g.text_width();
     let mut p = ParaStyle::body(fs);
+    p.bionic = g.bionic && b.kind != Kind::Pre;
     p.indent = 1.3 * fs;
     let (mut before, mut after) = (0.0, 0.0);
     match b.kind {
@@ -269,7 +274,6 @@ pub(crate) fn block_style(b: &Block, g: &Geometry) -> BlockStyle {
         Kind::Verse => {
             p.align = Align::Left;
             p.indent = 0.0;
-            p.hanging = 2.0 * fs;
             p.hyphenate = false;
         }
         Kind::TableRow => {
@@ -606,5 +610,37 @@ mod tests {
         assert!(!is_display(&para(&[("Конец цитаты.", None), ("1", Some("n1"))])));
         assert!(!is_display(&para(&[("«Так и сказал?»", None)])));
         assert!(!is_display(&para(&[("Длинный абзац без точки в конце ".repeat(5).as_str(), None)])));
+    }
+
+    #[test]
+    fn wrapped_verses_keep_stanza_left_edge() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts");
+        let fonts = FontSet::from_prefix(&format!("{root}/PTSerif"), &format!("{root}/LiberationMono-Regular.ttf")).unwrap();
+        let doc = crate::fb2::parse(
+            "<FictionBook><body><poem><stanza>
+             <v>Короткая строка.</v>
+             <v>Дом снимут, пройдет день-другой,</v>
+             <v>Одним — ликованье, другим — огорченье,</v>
+             </stanza></poem></body></FictionBook>".as_bytes(),
+        ).unwrap();
+        let hy = Hyphenator::new();
+        for scroll in [false, true] {
+            for bionic in [false, true] {
+                let mut g = Geometry::new(576.0, 1280.0, 62.0, fonts.faces[REGULAR].x_height, scroll);
+                g.bionic = bionic;
+                let pages = layout(&doc, &fonts, &hy, &g);
+                let lines: Vec<_> = pages.iter().flat_map(|p| &p.lines).collect();
+                let left = lines[0].x;
+                for (i, block) in doc.blocks.iter().enumerate().filter(|(_, b)| b.kind == Kind::Verse) {
+                    let verse: Vec<_> = lines.iter().filter(|l| l.block == i).collect();
+                    if block.text().chars().count() > 20 {
+                        assert!(verse.len() >= 2, "длинная строка должна перенестись: {}", block.text());
+                        assert!(verse[1].start > 0);
+                    }
+                    assert!(verse.iter().all(|l| (l.x - left).abs() < EPS),
+                        "все строки строфы должны начинаться от одного края: {}", block.text());
+                }
+            }
+        }
     }
 }

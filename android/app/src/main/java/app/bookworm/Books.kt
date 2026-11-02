@@ -68,6 +68,14 @@ class Books(private val ctx: Context) {
     /** Сколько прочитано, 0..100; −1 — книгу ещё не открывали. */
     fun progress(book: File): Int = prefs.getInt("pct:${book.name}", -1)
 
+    fun isFinished(book: File) = prefs.getBoolean("finished:${book.name}", false)
+
+    fun setFinished(book: File, finished: Boolean) = prefs.edit().putBoolean("finished:${book.name}", finished).apply()
+
+    var hideFinished: Boolean
+        get() = prefs.getBoolean("hideFinished", false)
+        set(value) { prefs.edit().putBoolean("hideFinished", value).apply() }
+
     fun saveProgress(book: File, percent: Int) = prefs.edit().putInt("pct:${book.name}", percent.coerceIn(0, 100)).apply()
 
     /** Удаляет книгу вместе с местом чтения. */
@@ -75,6 +83,7 @@ class Books(private val ctx: Context) {
         book.delete()
         coverFile(book).delete()
         val e = prefs.edit().remove("pos:${book.name}").remove("pct:${book.name}").remove("opened:${book.name}")
+            .remove("finished:${book.name}")
             .remove("info:${book.name}").remove("filemeta:${book.name}")
         if (prefs.getString("last", null) == book.name) e.remove("last")
         e.apply()

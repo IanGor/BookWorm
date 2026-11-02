@@ -125,14 +125,35 @@ pub struct Metrics {
 }
 
 pub struct FontSet {
-    /// REGULAR, ITALIC, BOLD, BOLD_ITALIC, MONO.
+    /// REGULAR, ITALIC, BOLD, BOLD_ITALIC, MONO; затем дополнительные начертания.
     pub faces: Vec<Face>,
+    bionic_faces: [usize; 2],
     cache: Mutex<HashMap<(usize, u32), Metrics>>,
 }
 
 impl FontSet {
-    pub fn new(faces: Vec<Face>) -> FontSet {
-        FontSet { faces, cache: Mutex::new(HashMap::new()) }
+    pub fn new(mut faces: Vec<Face>) -> FontSet {
+        let mut bionic_faces = [BOLD, BOLD_ITALIC];
+        for (slot, base) in [REGULAR, ITALIC].into_iter().enumerate() {
+            let f = &faces[base];
+            if f.ttf.variation_axes().into_iter().any(|a| a.tag == WGHT) {
+                if let Ok(face) = Face::from_static(f.ttf.raw_face().data, Some(600.0)) {
+                    bionic_faces[slot] = faces.len();
+                    faces.push(face);
+                }
+            }
+        }
+        FontSet { faces, bionic_faces, cache: Mutex::new(HashMap::new()) }
+    }
+
+    /// Semibold у вариативных гарнитур, доступный жирный у статических.
+    /// Авторский жирный и моноширинный код сохраняют своё начертание.
+    pub fn bionic_face(&self, base: usize) -> usize {
+        match base {
+            REGULAR => self.bionic_faces[0],
+            ITALIC => self.bionic_faces[1],
+            _ => base,
+        }
     }
 
     /// `prefix` — путь без начертания: `/usr/share/fonts/noto/NotoSerif`

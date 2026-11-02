@@ -13,10 +13,10 @@ object Core {
     }
 
     external fun lastError(): String
-    /** `fonts` — четыре строки «путь|насыщенность»; `step` — ступень размера в px; `scroll` — прокрутка. */
+    /** `fonts` — четыре начертания; `step` — размер в px; `scroll` — прокрутка; `bionic` — выделение начал слов. */
     external fun open(
         path: String, fonts: String, mono: String,
-        width: Int, height: Int, step: Float, scroll: Boolean,
+        width: Int, height: Int, step: Float, scroll: Boolean, bionic: Boolean,
     ): Long
 
     /** Гарнитуры из файлов: строки «название, кириллица 0/1, четыре начертания» через табуляцию. */
@@ -33,6 +33,9 @@ object Core {
     external fun topOf(h: Long, page: Int, pos: Long): Float
     external fun close(h: Long)
     external fun title(h: Long): String?
+    external fun blockAt(h: Long, page: Int, x: Float, y: Float): Int
+    external fun blockText(h: Long, block: Int): String?
+    external fun typographyReport(h: Long, block: Int): String?
     /** Название и авторы из файла без вёрстки: «название\nавтор1; автор2». */
     external fun meta(path: String): String?
     external fun pageCount(h: Long): Int

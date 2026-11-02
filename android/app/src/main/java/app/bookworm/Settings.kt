@@ -55,6 +55,10 @@ class Settings(private val ctx: Context) {
         get() = prefs.getBoolean("scroll", false)
         set(v) = prefs.edit().putBoolean("scroll", v).apply()
 
+    var bionic: Boolean
+        get() = prefs.getBoolean("bionic", false)
+        set(v) = prefs.edit().putBoolean("bionic", v).apply()
+
     /** Яркость, с которой начинать: своя, а если её не задавали — системная. */
     fun brightnessOrSystem(): Float {
         val b = brightness
@@ -78,7 +82,7 @@ class Settings(private val ctx: Context) {
     }
 
     /** Всё, что требует переверстать книгу: если оно изменилось, читалка откроет книгу заново. */
-    val layoutKey: String get() = "$family|$familyIsUser|$step|$scroll"
+    val layoutKey: String get() = "$family|$familyIsUser|$step|$scroll|$bionic"
 
     class Family(val name: String, val cyrillic: Boolean, val faces: String, val user: Boolean) {
         val label: String

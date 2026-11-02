@@ -21,6 +21,7 @@ class StripView(ctx: Context, private val host: Host) : View(ctx) {
         fun tile(chapter: Int, index: Int): Bitmap?
         fun footer(): Bitmap?
         fun onTap(x: Float, y: Float)
+        fun onLongPress(x: Float, y: Float)
         /** Прокрутка остановилась: сохранить позицию, обновить строку статуса. */
         fun onSettled(chapter: Int, top: Float)
         fun onResize(width: Int, height: Int)
@@ -68,7 +69,12 @@ class StripView(ctx: Context, private val host: Host) : View(ctx) {
             host.onTap(e.x, e.y)
             return true
         }
-    }).apply { setIsLongpressEnabled(false) }
+
+        override fun onLongPress(e: MotionEvent) {
+            removeCallbacks(settle)
+            host.onLongPress(e.x, e.y)
+        }
+    })
 
     fun jumpTo(chapter: Int, top: Float) {
         scroller.forceFinished(true)

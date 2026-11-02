@@ -191,6 +191,33 @@ impl Book {
         hit
     }
 
+    /// Контекст для воспроизведения ошибки без доступа к телефону.
+    pub fn typography_report(&self, block: usize) -> Option<String> {
+        let selected = self.doc.blocks.get(block)?;
+        let mut out = format!("Книга: {}\nАвторы: {}\nБлок: {} (индексы с нуля)\nГеометрия: {:#?}\n",
+            self.doc.title, self.doc.authors.join("; "), block, self.g);
+        for i in block.saturating_sub(1)..(block + 2).min(self.doc.blocks.len()) {
+            let b = &self.doc.blocks[i];
+            out.push_str(&format!("\nБлок {i}, полный текст:\n{}\n\nСтруктура, стили и Unicode:\n{b:#?}\n", b.text()));
+        }
+        let chars: Vec<char> = selected.text().chars().collect();
+        let lines: Vec<_> = (0..self.page_count()).flat_map(|n|
+            self.page(n).into_iter().flat_map(move |p| p.lines.iter().filter(move |l| l.block == block).map(move |l| (n, l)))
+        ).collect();
+        out.push_str("\nФактические строки выбранного блока:\n");
+        for (i, (page, l)) in lines.iter().enumerate() {
+            let start = l.start as usize;
+            let end = lines.get(i + 1).map_or(chars.len(), |(_, next)| next.start as usize);
+            let text: String = chars.get(start..end).unwrap_or_default().iter().collect();
+            out.push_str(&format!("страница/глава={}, offset={}, x={:.2}, baseline={:.2}, spacing={:?}, hyphen={}: {:?}\n",
+                page + 1, start, l.x, l.baseline, l.spacing, l.hyphen, text));
+            for r in &l.runs {
+                out.push_str(&format!("  face={}, size={:.3}, x={:.3}..{:.3}, scale={:.5}\n", r.face, r.size, r.x0, r.x1, r.xscale));
+            }
+        }
+        Some(out)
+    }
+
     /// Текст сноски, свёрстанный тем же движком для попапа шириной во весь экран.
     /// Возвращает строки (координаты от верха попапа) и высоту попапа.
     pub fn note(&self, id: &str) -> Option<(Vec<PlacedLine>, f32)> {
@@ -215,6 +242,20 @@ impl Book {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_keeps_full_context_styles_and_layout() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts");
+        let fonts = FontSet::from_prefix(&format!("{root}/PTSerif"), &format!("{root}/LiberationMono-Regular.ttf")).unwrap();
+        let mut g = Geometry::new(576.0, 1280.0, 62.0, fonts.faces[0].x_height, false);
+        g.bionic = true;
+        let b = Book::open("<FictionBook><body><p>Текст до.</p><p>Полный абзац с <emphasis>выделением</emphasis> и продолжением.</p><p>Текст после.</p></body></FictionBook>".as_bytes(), fonts, g).unwrap();
+        let report = b.typography_report(1).unwrap();
+        for expected in ["Текст до.", "Полный абзац", "продолжением.", "Текст после.", "italic: true", "bionic: true", "offset=", "baseline=", "face="] {
+            assert!(report.contains(expected), "нет данных: {expected}");
+        }
+        assert!(b.typography_report(usize::MAX).is_none());
+    }
 
     #[test]
     fn opens_zipped_fb2() {

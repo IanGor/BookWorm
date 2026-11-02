@@ -57,6 +57,12 @@ class SettingsActivity : ThemedActivity() {
         ))
         content.addView(footer("Размер текста меняется и вертикальным свайпом по левому краю экрана при чтении."))
 
+        content.addView(header("Бионическое чтение"))
+        content.addView(card(controlRow(Segmented(this, listOf("Выключено", "Включено"), if (settings.bionic) 1 else 0) {
+            settings.bionic = it == 1
+        })))
+        content.addView(footer("Начальные буквы слов выделяются более плотным начертанием."))
+
         // Оформление: тема.
         content.addView(header("Оформление"))
         val themes = listOf("auto", "day", "night")
@@ -71,7 +77,7 @@ class SettingsActivity : ThemedActivity() {
         content.addView(card(controlRow(Segmented(this, listOf("Страницы", "Прокрутка"), if (settings.scroll) 1 else 0) {
             settings.scroll = it == 1
         })))
-        content.addView(footer("Страницы — как в Kindle: касание справа листает вперёд, слева назад. Прокрутка — глава одной лентой."))
+        content.addView(footer("Касание в верхней трети экрана — назад, в нижней — вперёд, в центре — меню. В режиме прокрутки текст можно двигать пальцем."))
 
         // Яркость.
         content.addView(header("Яркость"))

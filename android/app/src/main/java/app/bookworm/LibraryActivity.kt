@@ -12,6 +12,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.CheckBox
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -49,6 +50,14 @@ class LibraryActivity : ThemedActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), 0, dp(16), 0)
             addView(titleView, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(20) })
+            addView(CheckBox(this@LibraryActivity).apply {
+                text = "Скрыть прочитанные"
+                setTextColor(res(R.color.ink))
+                buttonTintList = android.content.res.ColorStateList.valueOf(accent)
+                isChecked = books.hideFinished
+                minHeight = dp(48)
+                setOnCheckedChangeListener { _, checked -> books.hideFinished = checked; if (ready) reload() }
+            }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
             addView(grid, LinearLayout.LayoutParams(-1, -2))
         }
         scroll = ScrollView(this).apply {
@@ -111,7 +120,8 @@ class LibraryActivity : ThemedActivity() {
     }
 
     private fun reload() {
-        val files = books.list()
+        val all = books.list()
+        val files = all.filter { !books.hideFinished || !books.isFinished(it) }
         // Названия и авторов из самих файлов берём в фоне один раз; потом обложки перерисуются.
         val unknown = files.filter { books.needsFileInfo(it) }
         if (unknown.isNotEmpty() && !reading) {
@@ -126,7 +136,8 @@ class LibraryActivity : ThemedActivity() {
         }
         grid.removeAllViews()
         if (files.isEmpty()) {
-            grid.addView(emptyState())
+            if (all.isEmpty()) grid.addView(emptyState())
+            else grid.addView(label(this, "Все книги прочитаны. Снимите фильтр, чтобы увидеть их.", 17f, res(R.color.muted)))
             return
         }
         val gap = dp(16)
@@ -146,11 +157,12 @@ class LibraryActivity : ThemedActivity() {
         val info = books.info(f)
         val title = info.title
         val pct = books.progress(f)
-        val status = if (pct < 0) "Новая" else "$pct %"
+        val finished = books.isFinished(f)
+        val status = (if (pct < 0) "Новая" else "$pct %") + if (finished) " ⚑" else ""
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isClickable = true
-            contentDescription = "$title, ${if (pct < 0) "новая" else "прочитано $pct %"}"
+            contentDescription = "$title, ${if (finished) "книга прочитана" else if (pct < 0) "новая" else "прочитано $pct %"}"
             addView(
                 CoverView(this@LibraryActivity, title, info.author, books.coverFile(f).takeIf { it.exists() }?.let { android.graphics.BitmapFactory.decodeFile(it.path) }),
                 LinearLayout.LayoutParams(-1, -2),

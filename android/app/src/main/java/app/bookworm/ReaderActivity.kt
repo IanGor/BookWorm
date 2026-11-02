@@ -2,6 +2,9 @@ package app.bookworm
 
 import android.app.Activity
 import android.app.Dialog
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.res.Configuration
@@ -32,6 +35,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.EditText
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
@@ -41,12 +45,12 @@ import java.util.concurrent.Executors
  * (`worker`); здесь — жесты, кэш готовых страниц и панель управления.
  *
  * Два способа листания (Настройки → Листание):
- * - страницы, как у Kindle: касание в левой трети — назад, в остальной части — вперёд,
- *   свайпы и кнопки громкости;
- * - непрерывная прокрутка пальцем с инерцией; касание слева или справа и кнопки
- *   громкости сдвигают текст на экран.
- * Касание в верхней полосе показывает панель: «Библиотека», название, оглавление, «Аа»
- * (настройки) и внизу ползунок по книге. Вертикальный свайп по левому краю меняет
+ * - страницы: горизонтальные свайпы и кнопки громкости;
+ * - непрерывная прокрутка пальцем с инерцией, кнопки громкости сдвигают текст на экран.
+ * В обоих режимах касание в верхней трети — назад, в нижней — вперёд.
+ * Касание в центральной трети по обеим осям показывает панель: «Библиотека», название,
+ * оглавление, «Аа» (настройки), внизу ползунок по книге, сверху системная строка состояния.
+ * Вертикальный свайп по левому краю меняет
  * размер текста, по правому — яркость.
  */
 class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
@@ -68,6 +72,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
 
     // Поля ниже меняются только в главном потоке.
     private var book: File? = null
+    private var pendingReport: String? = null
     /** Настройки, с которыми книга свёрстана: изменились — переверстываем при возврате из настроек. */
     private var openedKey = ""
     private var pendingBook: File? = null
@@ -106,6 +111,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         super.onCreate(state)
         books = Books(this)
         settings = Settings(this)
+        pendingReport = state?.getString("pendingReport")
         night = isNight()
         pageView = PageView(this, this)
         stripView = StripView(this, this).apply {
@@ -130,12 +136,14 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         }
         setContentView(root)
         root.onInsets { top, bottom ->
-            topInset = top
-            bottomInset = bottom
-            buildChrome()
+            if (topInset != top || bottomInset != bottom || topBar == null) {
+                topInset = top
+                bottomInset = bottom
+                buildChrome()
+            }
         }
         applyBrightness()
-        immersive()
+        updateSystemBars()
         pendingUri = incomingUri(intent)
         pendingBook = incomingBook(intent)
         pageView.message("Подготовка…", fg())
@@ -229,6 +237,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         val dark = night
         val scroll = settings.scroll
         val step = settings.stepPx
+        val bionic = settings.bionic
         clearImages()
         message("Вёрстка…")
         worker.execute {
@@ -242,7 +251,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
                 return@execute
             }
             val t0 = SystemClock.elapsedRealtime()
-            val hd = Core.open(file.path, family.faces, settings.mono, w, h, step, scroll)
+            val hd = Core.open(file.path, family.faces, settings.mono, w, h, step, scroll, bionic)
             if (hd == 0L) {
                 val err = Core.lastError()
                 main.post {
@@ -256,6 +265,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
                 return@execute
             }
             handle = hd
+            if (books.needsFileInfo(file)) books.fileInfo(file)
             val n = Core.pageCount(hd)
             val pos = books.position(file)
             val p = Core.pageOf(hd, pos).coerceIn(0, maxOf(n - 1, 0))
@@ -474,32 +484,160 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
 
     // ---- Жесты ----
 
+    override fun onLongPress(x: Float, y: Float) {
+        val file = book ?: return
+        if (count == 0 || chromeShown) return
+        val g = gen
+        val (part, cy) = if (scrollMode) stripPoint(y) else page to y
+        val configuration = "Шрифт: ${settings.family}; ступень: ${settings.stepPx}; тема: ${settings.theme}; " +
+            "ночной режим: $night; бионическое чтение: ${settings.bionic}; прокрутка: $scrollMode"
+        worker.execute {
+            if (g != gen || handle == 0L) return@execute
+            val block = Core.blockAt(handle, part, x, cy)
+            val text = Core.blockText(handle, block) ?: return@execute
+            if (text.isBlank()) return@execute
+            val diagnostics = Core.typographyReport(handle, block) ?: return@execute
+            main.post {
+                if (g != gen || isDestroyed) return@post
+                val selectable = label(this, text, 18f, fg()).apply {
+                    setPadding(dp(20), dp(12), dp(20), dp(12))
+                    setTextIsSelectable(true)
+                }
+                AlertDialog.Builder(this)
+                    .setTitle("Ошибка оформления")
+                    .setMessage("Выделите фрагмент долгим нажатием. Без выделения в отчёт попадёт весь абзац.")
+                    .setView(ScrollView(this).apply { addView(selectable) })
+                    .setNegativeButton("Отмена", null)
+                    .setPositiveButton("Описать ошибку") { _, _ ->
+                        val a = minOf(selectable.selectionStart, selectable.selectionEnd)
+                        val b = maxOf(selectable.selectionStart, selectable.selectionEnd)
+                        val selected = if (a >= 0 && b > a) text.substring(a, b) else text
+                        describeTypography(file, selected, diagnostics, configuration)
+                    }.show()
+            }
+        }
+    }
+
+    private fun describeTypography(file: File, selected: String, diagnostics: String, configuration: String) {
+        val input = EditText(this).apply {
+            hint = "Что выглядит неправильно и как должно быть?"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 3
+            setTextColor(fg())
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Комментарий к фрагменту")
+            .setView(input)
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Сохранить промпт", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val comment = input.text.toString().trim()
+                if (comment.isEmpty()) { input.error = "Опишите ошибку оформления"; return@setOnClickListener }
+                val prompt = """
+                    Исправь ошибку оформления в Android-читалке BookWorm (репозиторий IanGor/BookWorm).
+                    Найди причину в разборе книги, типографе, подборе строк или отрисовке. Сохрани содержание книги.
+                    Воспроизведи проблему на приведённых данных и добавь проверку исправления.
+
+                    Комментарий пользователя:
+                    $comment
+
+                    Выделенный фрагмент:
+                    $selected
+
+                    Файл: ${file.name}
+                    BookWorm ${packageManager.getPackageInfo(packageName, 0).versionName}; Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})
+                    Экран: ${root.width} × ${root.height} px; плотность: ${resources.displayMetrics.density}
+                    $configuration
+
+                    Данные движка (текст после типографа, исходные стили и CSS, соседние блоки, строки):
+                    $diagnostics
+                """.trimIndent()
+                dialog.dismiss()
+                worker.execute {
+                    val result = runCatching {
+                        val dir = File(filesDir, "typography-reports").apply { mkdirs() }
+                        File.createTempFile("bookworm-report-", ".txt", dir).also { f ->
+                            Books.writeSafely(f) { it.write(prompt.toByteArray(Charsets.UTF_8)) }
+                        }
+                    }
+                    main.post {
+                        if (isDestroyed) return@post
+                        result.onSuccess { f -> pendingReport = f.name; exportReport() }
+                            .onFailure { toast("Не удалось сохранить промпт: ${it.message}") }
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun exportReport() {
+        val name = pendingReport ?: return
+        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TITLE, name)
+        }, REPORT_DOCUMENT)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REPORT_DOCUMENT) return
+        val name = pendingReport ?: return
+        val file = File(File(filesDir, "typography-reports"), File(name).name)
+        val uri = data?.data
+        if (resultCode != Activity.RESULT_OK || uri == null) {
+            Sheet(this, "Промпт сохранён в приложении")
+                .action("Сохранить в файлы") { exportReport() }
+                .action("Копировать промпт") {
+                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Ошибка оформления", file.readText()))
+                    toast("Промпт скопирован")
+                }.show()
+            return
+        }
+        worker.execute {
+            val result = runCatching {
+                val stream = contentResolver.openOutputStream(uri, "wt") ?: error("файл не открывается")
+                stream.use { out -> file.inputStream().use { it.copyTo(out) } }
+            }
+            main.post {
+                result.onSuccess { toast("Промпт сохранён в выбранный файл") }
+                    .onFailure { toast("Не удалось экспортировать: ${it.message}"); exportReport() }
+            }
+        }
+    }
+
+    override fun onSaveInstanceState(out: Bundle) {
+        out.putString("pendingReport", pendingReport)
+        super.onSaveInstanceState(out)
+    }
+
     override fun onTap(x: Float, y: Float) {
         // Пока панель открыта, любое касание страницы её закрывает и больше ничего не делает.
         if (chromeShown) {
             hideChrome()
             return
         }
-        if (y < root.height * 0.12f) {
-            showChrome()
-            return
-        }
-        if (scrollMode) {
+        val note = if (scrollMode) {
             val (ch, cy) = stripPoint(y)
-            val note = chapterNotes[ch]?.firstOrNull { it.contains(x, cy) }
-            when {
-                note != null -> showNote(note.id)
-                x < root.width / 3f -> scrollScreen(false)
-                else -> scrollScreen(true)
-            }
+            chapterNotes[ch]?.firstOrNull { it.contains(x, cy) }
+        } else {
+            cache[page]?.notes?.firstOrNull { it.contains(x, y) }
+        }
+        if (note != null) {
+            showNote(note.id)
             return
         }
-        val note = cache[page]?.notes?.firstOrNull { it.contains(x, y) }
-        when {
-            note != null -> showNote(note.id)
-            x < root.width / 3f -> go(page - 1)
-            else -> go(page + 1)
+        val upper = root.height / 3f
+        val lower = root.height * 2f / 3f
+        if (y >= upper && y < lower) {
+            if (x >= root.width / 3f && x < root.width * 2f / 3f) showChrome()
+            return
         }
+        val forward = y >= lower
+        if (scrollMode) scrollScreen(forward) else go(if (forward) page + 1 else page - 1)
     }
 
     override fun onSwipe(forward: Boolean) = go(if (forward) page + 1 else page - 1)
@@ -521,7 +659,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
     // ---- Панель управления: библиотека, оглавление, настройки, ползунок ----
 
     /**
-     * Полупрозрачная панель сверху и снизу поверх страницы. Появляется по касанию верхней полосы,
+     * Полупрозрачная панель сверху и снизу поверх страницы. Появляется по касанию центра,
      * уходит по касанию страницы. Строится заново при смене темы и размеров окна.
      */
     private fun buildChrome() {
@@ -535,13 +673,14 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         val line = getColor(R.color.separator)
 
         val titleText = TextView(this).apply {
-            text = book?.let { Books.cleanTitle(it) } ?: ""
+            text = book?.let { books.info(it).title } ?: ""
             textSize = 15f
             typeface = weight(600)
             setTextColor(ink)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
+            setPadding(dp(8), 0, dp(8), 0)
         }
         val back = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -566,13 +705,14 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
             setBackgroundColor(panel)
             isClickable = true
             setPadding(0, topInset, 0, 0)
-            addView(back, FrameLayout.LayoutParams(-2, dp(48), Gravity.START or Gravity.BOTTOM))
-            addView(titleText, FrameLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.36f).toInt(), -2, Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply { bottomMargin = dp(15) })
             addView(LinearLayout(this@ReaderActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(back, LinearLayout.LayoutParams(-2, -1))
+                addView(titleText, LinearLayout.LayoutParams(0, -1, 1f))
                 addView(toc)
-                addView(aa, LinearLayout.LayoutParams(dp(48), dp(48)))
-            }, FrameLayout.LayoutParams(-2, dp(48), Gravity.END or Gravity.BOTTOM).apply { rightMargin = dp(4) })
+                addView(aa, LinearLayout.LayoutParams(dp(48), -1))
+            }, FrameLayout.LayoutParams(-1, dp(48), Gravity.BOTTOM).apply { rightMargin = dp(4) })
             addView(View(this@ReaderActivity).apply { setBackgroundColor(line) }, FrameLayout.LayoutParams(-1, 1, Gravity.BOTTOM))
         }
 
@@ -645,6 +785,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
             v.visibility = View.VISIBLE
             v.alpha = 0f
         }
+        updateSystemBars()
         t.post {
             t.translationY = -t.height / 3f
             b.translationY = b.height / 3f
@@ -659,6 +800,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         val b = bottomBar ?: return
         if (!chromeShown) return
         chromeShown = false
+        updateSystemBars()
         t.animate().alpha(0f).translationY(-t.height / 3f).setDuration(180).withEndAction { if (!chromeShown) t.visibility = View.GONE }.start()
         b.animate().alpha(0f).translationY(b.height / 3f).setDuration(180).withEndAction { if (!chromeShown) b.visibility = View.GONE }.start()
     }
@@ -863,6 +1005,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         hud.setTextColor(getColor(R.color.ink))
         (hud.background as? android.graphics.drawable.GradientDrawable)?.setColor(getColor(R.color.panel))
         buildChrome()
+        updateSystemBars()
         gen++
         clearImages()
         if (count == 0) return
@@ -877,7 +1020,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) immersive()
+        if (hasFocus) updateSystemBars()
     }
 
     /** Вернулись из настроек: яркость — сразу, шрифт, размер и листание — переверстать книгу. */
@@ -888,11 +1031,15 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         if (started && b != null && settings.layoutKey != openedKey) open(b)
     }
 
-    private fun immersive() {
+    /** Строка состояния видна вместе с меню; книга всегда остаётся во весь экран. */
+    private fun updateSystemBars() {
         window.setDecorFitsSystemWindows(false)
         window.insetsController?.apply {
-            hide(WindowInsets.Type.systemBars())
             systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            val light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+            setSystemBarsAppearance(if (night) 0 else light, light)
+            hide(WindowInsets.Type.navigationBars())
+            if (chromeShown) show(WindowInsets.Type.statusBars()) else hide(WindowInsets.Type.statusBars())
         }
     }
 
@@ -916,6 +1063,7 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
         /** Имя файла книги в папке библиотеки: так экран библиотеки говорит, что открыть. */
         const val EXTRA_BOOK = "book"
         private const val TAG = "BookWorm"
+        private const val REPORT_DOCUMENT = 901
         /** Плитка прокрутки — полэкрана, ~5 МБ; держим около трёх экранов. */
         private const val MAX_TILES = 8
         /** Ширина полосы у края экрана для свайпов размера и яркости. */

@@ -14,6 +14,7 @@ import kotlin.math.abs
 class PageView(ctx: Context, private val listener: Listener) : View(ctx) {
     interface Listener {
         fun onTap(x: Float, y: Float)
+        fun onLongPress(x: Float, y: Float)
         fun onSwipe(forward: Boolean)
         fun onResize(width: Int, height: Int)
     }
@@ -34,12 +35,14 @@ class PageView(ctx: Context, private val listener: Listener) : View(ctx) {
             return true
         }
 
+        override fun onLongPress(e: MotionEvent) { listener.onLongPress(e.x, e.y) }
+
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
             if (abs(vx) < abs(vy) || abs(vx) < 300) return false
             listener.onSwipe(vx < 0)
             return true
         }
-    }).apply { setIsLongpressEnabled(false) }
+    })
 
     fun show(b: Bitmap) {
         bitmap = b
