@@ -682,6 +682,18 @@ def gen_epub2():
     })
 
 
+def gen_styled_subtitles():
+    body = (ROOT / "tests/fixtures/epub-styled-subtitles.xhtml").read_text()
+    write_epub(OUT / "11_styled_subtitles.epub", {
+        "OEBPS/content.opf": """<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">styled-subtitles</dc:identifier>
+<dc:title>Подзаголовки обычного кегля</dc:title><dc:language>ru</dc:language></metadata>
+<manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine><itemref idref="chapter"/></spine></package>""",
+        "OEBPS/chapter.xhtml": body,
+    })
+
+
 def gen_calibration_epub():
     body = (f'<section epub:type="chapter"><h1>{CALIB_HEAD}</h1>'
             f'<blockquote class="epigraph"><p>{CALIB_EPIGRAPH[0]}</p><p class="author">{CALIB_EPIGRAPH[1]}</p></blockquote>'
@@ -727,6 +739,7 @@ def main():
     save("09_broken.fb2", gen_broken())
     save("10_calibration.fb2", gen_calibration_fb2())
     gen_calibration_epub()
+    gen_styled_subtitles()
     shutil.rmtree(IMG)
 
     for f in sorted(OUT.iterdir()):

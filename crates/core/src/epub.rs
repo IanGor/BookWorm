@@ -315,8 +315,33 @@ pub fn parse(bytes: &[u8], entries: &[Entry]) -> Result<Document, String> {
         doc.toc = conv.headings.clone();
     }
     doc.blocks = conv.blocks;
+    mark_styled_subtitles(&mut doc.blocks);
     mark_italic_epigraphs(&mut doc.blocks);
     Ok(doc)
+}
+
+/// Издатель может обозначить подзаголовок только центровкой и жирными прописными,
+/// в том числе во вложенных span/em, без увеличенного font-size и тегов h1–h6.
+fn mark_styled_subtitles(blocks: &mut [Block]) {
+    for b in blocks {
+        if b.kind != Kind::Para || b.ctx != Context::default() || b.css.align != Some(Align::Center) {
+            continue;
+        }
+        let text = b.text();
+        let t = text.trim();
+        let end = t.trim_end_matches(['»', '”', '"', '\'', '’', ')', ']']);
+        if t.chars().count() <= 100
+            && t.chars().any(char::is_uppercase)
+            && !t.chars().any(char::is_lowercase)
+            && !end.ends_with(['.', '!', '?', '…', ':', ';', ','])
+            && b.spans.iter().filter(|s| !s.text.trim().is_empty()).all(|s| {
+                let st = s.style;
+                s.note.is_none() && st.bold && !st.sup && !st.sub && !st.code && !st.strike
+            })
+        {
+            b.kind = Kind::Subtitle;
+        }
+    }
 }
 
 /// Несколько коротких абзацев подряд целиком курсивом — вступление-эпиграф, которое издатель
@@ -940,6 +965,81 @@ mod tests {
         // Стихи через <br/>: отдельные строки.
         assert!(d.blocks.iter().any(|b| b.text() == "В\u{a0}тумане моря голубом!.."));
         assert!(d.blocks.iter().any(|b| b.text().starts_with("Текст прямо в\u{a0}div")));
+    }
+
+    #[test]
+    fn styled_uppercase_paragraphs_are_subtitles_without_changing_text() {
+        let d = corpus("11_styled_subtitles.epub");
+        let expected = ["РОЛЬ ТЕХНОЛОГИЙ", "КОУЧИНГ", "УКОМПЛЕКТОВАНИЕ ПЕРСОНАЛОМ", "ВИДЕНИЕ ПРОДУКТА"];
+        let subtitles: Vec<_> = d.blocks.iter().filter(|b| b.kind == Kind::Subtitle).map(Block::text).collect();
+        assert_eq!(subtitles, expected);
+        for title in expected {
+            let b = d.blocks.iter().find(|b| b.text() == title).unwrap();
+            assert_eq!(b.ctx, Context::default());
+            assert_eq!(b.css.align, Some(Align::Center));
+            assert_eq!(b.css.indent, None);
+            assert_eq!((b.css.left_em, b.css.right_em), (2.0, 2.0));
+            assert!(b.spans.iter().all(|s| s.style.bold && s.style.italic));
+        }
+        // Эвристика меняет только роль блока, а не содержание, стили или оглавление.
+        let root = xml::parse(include_str!("../../../tests/fixtures/epub-styled-subtitles.xhtml"));
+        let notes = Notes::default();
+        let mut conv = Conv::new(Lang::Ru, &notes, false);
+        conv.sheet.add(&root.find("style").unwrap().text());
+        conv.block(root.find("body").unwrap(), St::default());
+        assert_eq!(texts(&d), conv.blocks.iter().map(Block::text).collect::<Vec<_>>());
+        assert_eq!(d.toc.len(), 1);
+        assert_eq!(d.toc[0].title, "Подзаголовки обычного кегля");
+        for b in &d.blocks {
+            if !expected.contains(&b.text().as_str()) && !matches!(b.kind, Kind::Heading(_)) {
+                assert_ne!(b.kind, Kind::Subtitle, "false subtitle: {}", b.text());
+            }
+        }
+        let body = d.blocks.iter().find(|b| b.text().starts_with("В\u{a0}большинстве")).unwrap();
+        assert!(body.spans.iter().any(|s| s.text == "ю" && s.style.italic));
+    }
+
+    #[test]
+    fn styled_subtitles_have_spacing_no_indent_and_stay_with_body() {
+        use crate::{font::FontSet, layout::Geometry};
+        let data = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/corpus/synthetic/11_styled_subtitles.epub")).unwrap();
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts");
+        for scroll in [false, true] {
+            for bionic in [false, true] {
+                let fonts = FontSet::from_prefix(&format!("{root}/PTSerif"), &format!("{root}/LiberationMono-Regular.ttf")).unwrap();
+                let g = Geometry { width: 1080.0, height: 2400.0, margin_x: 88.0, margin_y: 150.0,
+                    font_size: 48.250492, leading: 1.3347014, scroll, bionic };
+                let book = book::Book::open(&data, fonts, g).unwrap();
+                let mut checked = 0;
+                for (bi, block) in book.doc.blocks.iter().enumerate().filter(|(_, b)| b.kind == Kind::Subtitle) {
+                    checked += 1;
+                    let st = crate::layout::block_style(block, &book.g).para;
+                    assert_eq!(st.indent, 0.0);
+                    assert!(!st.hyphenate);
+                    assert_eq!(st.align, Align::Center);
+                    let lines: Vec<_> = (0..book.page_count()).flat_map(|n| book.page(n).unwrap().lines.iter().map(move |l| (n, l))).collect();
+                    let title: Vec<_> = lines.iter().filter(|(_, l)| l.block == bi).collect();
+                    assert!(!title.is_empty());
+                    for (_, l) in &title {
+                        assert!(!l.hyphen);
+                        let left = l.runs.first().unwrap().x0 + l.x;
+                        let right = l.runs.last().unwrap().x1 + l.x;
+                        assert!(((left + right) / 2.0 - 540.0).abs() < 0.1, "not centered: {}", block.text());
+                    }
+                    let (page, last) = title.last().unwrap();
+                    let (next_page, next) = lines.iter().find(|(_, l)| l.block == bi + 1).unwrap();
+                    assert_eq!(page, next_page, "subtitle left without body");
+                    assert!(next.baseline - last.baseline >= book.g.unit() * 1.99);
+                    let (first_page, first) = title.first().unwrap();
+                    if let Some((prev_page, prev)) = lines.iter().rev().find(|(_, l)| l.block < bi) {
+                        if first_page == prev_page {
+                            assert!(first.baseline - prev.baseline >= book.g.unit() * 1.99);
+                        }
+                    }
+                }
+                assert_eq!(checked, 4);
+            }
+        }
     }
 
     #[test]
