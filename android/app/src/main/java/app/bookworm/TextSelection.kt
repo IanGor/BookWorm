@@ -3,7 +3,12 @@ package app.bookworm
 /** Offsets are UTF-16, just like String.substring and Android's selection APIs. */
 internal data class SelectionCell(val start: Int, val end: Int, val left: Float, val top: Float, val right: Float, val bottom: Float)
 
-internal class TextSelection(val text: String, val cells: List<SelectionCell>) {
+internal class TextSelection(val text: String, cells: List<SelectionCell>) {
+    var cells = cells
+        private set
+
+    fun updateCells(visible: List<SelectionCell>) { cells = visible }
+
     var start = 0
         private set
     var end = 0
@@ -38,12 +43,13 @@ internal class TextSelection(val text: String, val cells: List<SelectionCell>) {
 
     companion object {
         fun parse(text: String, geometry: String, shiftY: Float): TextSelection {
-            val cells = geometry.lineSequence().filter { it.isNotBlank() }.map { row ->
-                val v = row.split(' ')
-                SelectionCell(v[0].toInt(), v[1].toInt(), v[2].toFloat(), v[3].toFloat() - shiftY,
-                    v[4].toFloat(), v[5].toFloat() - shiftY)
-            }.toList()
-            return TextSelection(text, cells)
+            return TextSelection(text, parseCells(geometry, shiftY))
         }
+
+        fun parseCells(geometry: String, shiftY: Float): List<SelectionCell> = geometry.lineSequence().filter { it.isNotBlank() }.map { row ->
+            val v = row.split(' ')
+            SelectionCell(v[0].toInt(), v[1].toInt(), v[2].toFloat(), v[3].toFloat() - shiftY,
+                v[4].toFloat(), v[5].toFloat() - shiftY)
+        }.toList()
     }
 }

@@ -352,8 +352,8 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
 
     // ---- Страницы ----
 
-    private fun go(target: Int) {
-        selectionView?.finish()
+    private fun go(target: Int, keepSelection: Boolean = false) {
+        if (!keepSelection) selectionView?.finish()
         if (count == 0 || target < 0 || target >= count || target == page) return
         if (chromeShown) hideChrome()
         page = target
@@ -489,30 +489,75 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
 
     // ---- Жесты ----
 
+    private data class SelectionPart(val page: Int, val top: Float, val height: Float, val shift: Float)
+
+    /** Область экрана может содержать конец одной главы и начало следующей. */
+    private fun selectionParts(): List<SelectionPart> {
+        if (!scrollMode) return listOf(SelectionPart(page, 0f, root.height.toFloat(), 0f))
+        val parts = ArrayList<SelectionPart>()
+        var ch = stripView.chapter
+        var top = stripView.top
+        var y = 0f
+        val bottom = (root.height - (footerBitmap?.height ?: 0)).toFloat()
+        val heights = stripView.heights
+        while (ch < heights.size && y < bottom) {
+            val visible = minOf(heights[ch] - top, bottom - y)
+            if (visible > 0) parts.add(SelectionPart(ch, top, visible, top - y))
+            y += visible.coerceAtLeast(0f)
+            ch++
+            top = 0f
+        }
+        return parts
+    }
+
+    /** Только worker: координаты глифов нескольких видимых глав в координатах экрана. */
+    private fun selectionCells(parts: List<SelectionPart>): List<SelectionCell> = parts.flatMap { part ->
+        TextSelection.parseCells(Core.selectionCells(handle, part.page, part.top, part.height).orEmpty(), part.shift)
+    }
+
+    private fun advanceSelection(dy: Float, done: (List<SelectionCell>?) -> Unit) {
+        val overlay = selectionView ?: return done(null)
+        val before = selectionParts()
+        if (scrollMode) stripView.scrollBy(dy)
+        else go(page + if (dy > 0) 1 else -1, keepSelection = true)
+        val after = selectionParts()
+        if (before == after) return done(null)
+        val g = gen
+        worker.execute {
+            if (g != gen || handle == 0L) return@execute
+            val cells = selectionCells(after)
+            main.post { if (g == gen && selectionView === overlay) done(cells) }
+        }
+    }
+
     override fun onLongPress(x: Float, y: Float) {
         val file = book ?: return
         if (count == 0 || chromeShown) return
         val g = gen
-        val (part, cy) = if (scrollMode) stripPoint(y) else page to y
-        val origin = stripView.chapter to stripView.top
-        val originPage = page
+        val parts = selectionParts()
         val configuration = "Шрифт: ${settings.family}; ступень: ${settings.stepPx}; тема: ${settings.theme}; " +
             "ночной режим: $night; бионическое чтение: ${settings.bionic}; прокрутка: $scrollMode"
         worker.execute {
             if (g != gen || handle == 0L) return@execute
-            val block = Core.blockAt(handle, part, x, cy)
-            val text = Core.blockText(handle, block) ?: return@execute
-            if (text.isBlank()) return@execute
-            val cells = Core.selectionCells(handle, part, block) ?: return@execute
-            val diagnostics = Core.typographyReport(handle, block) ?: return@execute
+            val text = Core.selectionText(handle) ?: return@execute
+            val cells = selectionCells(parts)
             main.post {
-                if (g != gen || isDestroyed || !hasWindowFocus()) return@post
-                if ((scrollMode && origin != (stripView.chapter to stripView.top)) || (!scrollMode && originPage != page)) return@post
-                val selection = TextSelection.parse(text, cells, cy - y)
-                if (selection.cells.isEmpty()) return@post
+                if (g != gen || isDestroyed || !hasWindowFocus() || parts != selectionParts()) return@post
+                if (cells.isEmpty()) return@post
+                val selection = TextSelection(text, cells)
                 selectionView?.finish()
-                val overlay = SelectionView(this, selection,
-                    report = { selected -> describeTypography(file, selected, diagnostics, configuration) },
+                val overlay = SelectionView(this, selection, scrollMode,
+                    advance = ::advanceSelection,
+                    report = { start, end, selected ->
+                        worker.execute {
+                            if (g != gen || handle == 0L) return@execute
+                            val diagnostics = Core.selectionReport(handle, start, end) ?: return@execute
+                            main.post {
+                                if (g == gen && !isDestroyed && hasWindowFocus())
+                                    describeTypography(file, selected, diagnostics, configuration)
+                            }
+                        }
+                    },
                     closed = { selectionView?.let { root.removeView(it) }; selectionView = null })
                 selectionView = overlay
                 root.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -650,6 +695,10 @@ class ReaderActivity : ThemedActivity(), PageView.Listener, StripView.Host {
             KeyEvent.KEYCODE_VOLUME_DOWN -> true
             KeyEvent.KEYCODE_VOLUME_UP -> false
             else -> return super.onKeyDown(keyCode, event)
+        }
+        selectionView?.let {
+            it.navigate(if (forward) root.height * 0.85f else -root.height * 0.85f)
+            return true
         }
         if (chromeShown) hideChrome()
         if (scrollMode) scrollScreen(forward) else go(if (forward) page + 1 else page - 1)

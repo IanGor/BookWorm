@@ -16,13 +16,51 @@ import android.view.View
 internal class SelectionView(
     ctx: Context,
     private val selection: TextSelection,
-    private val report: (String) -> Unit,
+    private val continuous: Boolean,
+    private val advance: (Float, (List<SelectionCell>?) -> Unit) -> Unit,
+    private val report: (Int, Int, String) -> Unit,
     private val closed: () -> Unit,
 ) : View(ctx) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val radius = 10f * resources.displayMetrics.density
     private var mode: ActionMode? = null
     private var dragging: Boolean? = null
+    private var pointerX = 0f
+    private var pointerY = 0f
+    private var downX = 0f
+    private var downY = 0f
+    private var panning = false
+    private var loading = false
+    private var nextAdvanceAt = 0L
+    private val edgeSize = 48f * resources.displayMetrics.density
+    private val autoScroll = object : Runnable {
+        override fun run() {
+            if (dragging == null || loading) return
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now < nextAdvanceAt) { postDelayed(this, nextAdvanceAt - now); return }
+            val direction = when {
+                pointerY < edgeSize -> -1
+                pointerY > height - edgeSize -> 1
+                else -> return
+            }
+            nextAdvanceAt = now + if (continuous) 50L else 650L
+            moveViewport(direction * height * 0.07f)
+        }
+    }
+
+    private fun moveViewport(dy: Float) {
+        if (loading) return
+        loading = true
+        advance(dy) { cells ->
+            loading = false
+            if (mode == null || cells == null) return@advance
+            selection.updateCells(cells)
+            dragging?.let { selection.moveHandle(it, pointerX, pointerY - radius) }
+            invalidate()
+            mode?.invalidateContentRect()
+            if (dragging != null) postDelayed(autoScroll, if (continuous) 50L else 650L)
+        }
+    }
 
     init { isFocusableInTouchMode = true }
 
@@ -45,14 +83,24 @@ internal class SelectionView(
                         mode.finish()
                     }
                     2 -> { selection.selectAll(); invalidate(); mode.invalidateContentRect() }
-                    3 -> { val text = selection.selected; mode.finish(); report(text) }
+                    3 -> {
+                        val start = selection.start
+                        val end = selection.end
+                        val text = selection.selected
+                        mode.finish()
+                        report(start, end, text)
+                    }
                     else -> return false
                 }
                 return true
             }
-            override fun onDestroyActionMode(mode: ActionMode) { this@SelectionView.mode = null; closed() }
+            override fun onDestroyActionMode(mode: ActionMode) {
+                removeCallbacks(autoScroll)
+                this@SelectionView.mode = null
+                closed()
+            }
             override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
-                val cell = selection.cells.firstOrNull { it.end > selection.start } ?: return
+                val cell = selection.cells.firstOrNull { it.end > selection.start && it.start < selection.end } ?: selection.cells.firstOrNull() ?: return
                 outRect.set(cell.left.toInt(), cell.top.toInt().coerceAtLeast(0), cell.right.toInt(), cell.bottom.toInt().coerceAtLeast(1))
             }
         }, ActionMode.TYPE_FLOATING)
@@ -62,8 +110,10 @@ internal class SelectionView(
 
     fun finish() { mode?.finish() }
 
-    private fun firstCell() = selection.cells.firstOrNull { it.end > selection.start && it.start < selection.end }
-    private fun lastCell() = selection.cells.lastOrNull { it.end > selection.start && it.start < selection.end }
+    fun navigate(dy: Float) { moveViewport(dy) }
+
+    private fun firstCell() = selection.cells.firstOrNull { it.start <= selection.start && it.end > selection.start }
+    private fun lastCell() = selection.cells.lastOrNull { it.start < selection.end && it.end >= selection.end }
 
     override fun onDraw(canvas: Canvas) {
         paint.color = 0x663399ff
@@ -78,6 +128,9 @@ internal class SelectionView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        val previousY = pointerY
+        pointerX = event.x
+        pointerY = event.y
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val first = firstCell()
@@ -86,14 +139,34 @@ internal class SelectionView(
                 val a = first?.let { distance(it.left, it.bottom + radius) } ?: Float.MAX_VALUE
                 val b = last?.let { distance(it.right, it.bottom + radius) } ?: Float.MAX_VALUE
                 dragging = if (minOf(a, b) <= radius * 3) a <= b else null
-                if (dragging == null) { finish(); return true }
+                downX = event.x
+                downY = event.y
+                nextAdvanceAt = 0L
+                panning = false
                 mode?.hide(60_000)
             }
-            MotionEvent.ACTION_MOVE -> dragging?.let {
-                selection.moveHandle(it, event.x, event.y - radius)
-                invalidate()
+            MotionEvent.ACTION_MOVE -> {
+                val handle = dragging
+                if (handle != null) {
+                    selection.moveHandle(handle, pointerX, pointerY - radius)
+                    invalidate()
+                    removeCallbacks(autoScroll)
+                    if (!loading) post(autoScroll)
+                } else if (panning || kotlin.math.hypot(pointerX - downX, pointerY - downY) > radius) {
+                    panning = true
+                    if (continuous) moveViewport(previousY - pointerY)
+                }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(autoScroll)
+                if (event.actionMasked == MotionEvent.ACTION_UP && dragging == null) {
+                    if (!panning) finish()
+                    else if (!continuous) {
+                        val dx = downX - pointerX
+                        val dy = downY - pointerY
+                        moveViewport(if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) dx else dy)
+                    }
+                }
                 dragging = null
                 mode?.hide(0)
                 mode?.invalidateContentRect()

@@ -40,6 +40,8 @@ pub struct Book {
     seg_pages: Vec<Vec<Page>>,
     /// Номер первой страницы каждого куска.
     seg_first: Vec<usize>,
+    /// Начала блоков в общем тексте выделения, в единицах UTF-16.
+    selection_offsets: Vec<usize>,
 }
 
 impl Book {
@@ -55,12 +57,19 @@ impl Book {
             g,
             seg_pages,
             seg_first: Vec::new(),
+            selection_offsets: Vec::new(),
         };
         book.reindex();
         Ok(book)
     }
 
     fn reindex(&mut self) {
+        let mut offset = 0;
+        self.selection_offsets = self.doc.blocks.iter().map(|b| {
+            let start = offset;
+            offset += b.spans.iter().map(|s| s.text.encode_utf16().count()).sum::<usize>() + 2;
+            start
+        }).collect();
         let mut n = 0;
         self.seg_first = self
             .seg_pages
@@ -191,23 +200,32 @@ impl Book {
         hit
     }
 
-    /// Selection rectangles in page/chapter coordinates, offsets in Android UTF-16 units.
-    pub fn selection_cells(&self, n: usize, block: usize) -> String {
+    /// Разделители абзацев есть только в копируемом тексте; документ не меняется.
+    pub fn selection_text(&self) -> String {
+        self.doc.blocks.iter().map(|b| b.text()).collect::<Vec<_>>().join("\n\n")
+    }
+
+    /// Только видимые глифы; смещения относятся ко всей книге, включая другие главы.
+    pub fn selection_cells(&self, n: usize, top: f32, height: f32) -> String {
         let Some(page) = self.page(n) else { return String::new() };
-        let Some(b) = self.doc.blocks.get(block) else { return String::new() };
-        let text = b.text();
-        let mut utf16 = vec![0];
-        for c in text.chars() {
-            utf16.push(utf16.last().unwrap() + c.len_utf16());
-        }
+        let mut offsets = std::collections::HashMap::new();
         let mut out = String::new();
-        for l in page.lines.iter().filter(|l| l.block == block) {
+        for l in &page.lines {
             for r in &l.runs {
+                let y0 = l.baseline - r.size * 0.9;
+                let y1 = l.baseline + r.size * 0.3;
+                if y1 <= top || y0 >= top + height { continue; }
+                let utf16 = offsets.entry(l.block).or_insert_with(|| {
+                    let mut utf16 = vec![self.selection_offsets[l.block]];
+                    for c in self.doc.blocks[l.block].text().chars() {
+                        utf16.push(utf16.last().unwrap() + c.len_utf16());
+                    }
+                    utf16
+                });
                 for g in &r.glyphs {
                     if let Some((a, b)) = g.source {
                         out.push_str(&format!("{} {} {} {} {} {}\n", utf16[a as usize], utf16[b as usize],
-                            l.x + g.left, l.baseline - r.size * 0.9,
-                            l.x + g.right, l.baseline + r.size * 0.3));
+                            l.x + g.left, y0, l.x + g.right, y1));
                     }
                 }
             }
@@ -215,26 +233,43 @@ impl Book {
         out
     }
 
+    pub fn selection_report(&self, start: usize, end: usize) -> Option<String> {
+        if start >= end { return None; }
+        let first = self.selection_offsets.partition_point(|&o| o <= start).checked_sub(1)?;
+        let last = self.selection_offsets.partition_point(|&o| o < end).checked_sub(1)?;
+        let last_end = self.selection_offsets.last()? + self.doc.blocks.last()?.text().encode_utf16().count();
+        if end > last_end { return None; }
+        self.typography_report_blocks(first, last)
+    }
+
     /// Контекст для воспроизведения ошибки без доступа к телефону.
     pub fn typography_report(&self, block: usize) -> Option<String> {
-        let selected = self.doc.blocks.get(block)?;
-        let mut out = format!("Книга: {}\nАвторы: {}\nБлок: {} (индексы с нуля)\nГеометрия: {:#?}\n",
-            self.doc.title, self.doc.authors.join("; "), block, self.g);
-        for i in block.saturating_sub(1)..(block + 2).min(self.doc.blocks.len()) {
+        self.typography_report_blocks(block, block)
+    }
+
+    fn typography_report_blocks(&self, block: usize, last: usize) -> Option<String> {
+        self.doc.blocks.get(block)?;
+        self.doc.blocks.get(last)?;
+        let mut out = format!("Книга: {}\nАвторы: {}\nБлоки: {}..={} (индексы с нуля)\nГеометрия: {:#?}\n",
+            self.doc.title, self.doc.authors.join("; "), block, last, self.g);
+        for i in block.saturating_sub(1)..(last + 2).min(self.doc.blocks.len()) {
             let b = &self.doc.blocks[i];
             out.push_str(&format!("\nБлок {i}, полный текст:\n{}\n\nСтруктура, стили и Unicode:\n{b:#?}\n", b.text()));
         }
-        let chars: Vec<char> = selected.text().chars().collect();
+        let chars: std::collections::HashMap<_, Vec<char>> = (block..=last)
+            .map(|i| (i, self.doc.blocks[i].text().chars().collect())).collect();
         let lines: Vec<_> = (0..self.page_count()).flat_map(|n|
-            self.page(n).into_iter().flat_map(move |p| p.lines.iter().filter(move |l| l.block == block).map(move |l| (n, l)))
+            self.page(n).into_iter().flat_map(move |p| p.lines.iter().filter(move |l| (block..=last).contains(&l.block)).map(move |l| (n, l)))
         ).collect();
         out.push_str("\nФактические строки выбранного блока:\n");
         for (i, (page, l)) in lines.iter().enumerate() {
+            let chars = &chars[&l.block];
             let start = l.start as usize;
-            let end = lines.get(i + 1).map_or(chars.len(), |(_, next)| next.start as usize);
+            let end = lines.get(i + 1).filter(|(_, next)| next.block == l.block)
+                .map_or(chars.len(), |(_, next)| next.start as usize);
             let text: String = chars.get(start..end).unwrap_or_default().iter().collect();
-            out.push_str(&format!("страница/глава={}, offset={}, x={:.2}, baseline={:.2}, spacing={:?}, hyphen={}: {:?}\n",
-                page + 1, start, l.x, l.baseline, l.spacing, l.hyphen, text));
+            out.push_str(&format!("блок={}, страница/глава={}, offset={}, x={:.2}, baseline={:.2}, spacing={:?}, hyphen={}: {:?}\n",
+                l.block, page + 1, start, l.x, l.baseline, l.spacing, l.hyphen, text));
             for r in &l.runs {
                 out.push_str(&format!("  face={}, size={:.3}, x={:.3}..{:.3}, scale={:.5}\n", r.face, r.size, r.x0, r.x1, r.xscale));
             }
@@ -300,15 +335,15 @@ mod tests {
                 let mut hyphenated = false;
                 let mut faces = std::collections::HashSet::new();
                 for n in 0..b.page_count() {
-                    let cells = b.selection_cells(n, 1);
+                    let cells = b.selection_cells(n, 0.0, f32::MAX);
                     assert_eq!(cells.lines().count(), b.page(n).unwrap().lines.iter()
-                        .filter(|l| l.block == 1).flat_map(|l| &l.runs)
+                        .flat_map(|l| &l.runs)
                         .flat_map(|r| &r.glyphs).filter(|g| g.source.is_some()).count());
                     for row in cells.lines() {
                         let v: Vec<&str> = row.split_whitespace().collect();
                         let a: usize = v[0].parse().unwrap();
                         let z: usize = v[1].parse().unwrap();
-                        let utf16: Vec<u16> = text.encode_utf16().collect();
+                        let utf16: Vec<u16> = b.selection_text().encode_utf16().collect();
                         assert!(z > a && z <= utf16.len());
                         assert!(String::from_utf16(&utf16[a..z]).is_ok());
                         assert!(v[4].parse::<f32>().unwrap() >= v[2].parse::<f32>().unwrap());
@@ -334,9 +369,70 @@ mod tests {
                 for (i, c) in chars.iter().enumerate() {
                     assert!(c.is_whitespace() || covered[i], "missing source character {i}: {c}");
                 }
-                assert!(b.selection_cells(usize::MAX, 1).is_empty());
-                assert!(b.selection_cells(0, usize::MAX).is_empty());
+                assert!(b.selection_cells(usize::MAX, 0.0, 2400.0).is_empty());
+                assert!(b.selection_cells(0, 0.0, 0.0).is_empty());
             }
+        }
+    }
+
+    #[test]
+    fn selection_spans_paragraphs_pages_and_chapters() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts");
+        let sample = include_str!("../../../tests/fixtures/selection-ru.txt").trim();
+        for scroll in [false, true] {
+            let fonts = FontSet::from_prefix(&format!("{root}/PTSerif"), &format!("{root}/LiberationMono-Regular.ttf")).unwrap();
+            let mut g = Geometry::new(1080.0, 2400.0, 46.0, fonts.faces[0].x_height, scroll);
+            g.bionic = true;
+            let paragraphs = format!("<p>{sample}</p>").repeat(6);
+            let xml = format!("<FictionBook><body><section><title><p>Первая глава</p></title>{paragraphs}</section><section><title><p>Вторая глава</p></title><p>Начало второго раздела.</p>{paragraphs}</section><section><title><p>Третья глава</p></title><p>Начало 😀 третьего раздела.</p>{paragraphs}<p>Финал.</p></section></body></FictionBook>");
+            let b = Book::open(xml.as_bytes(), fonts, g).unwrap();
+            assert!(b.page_count() >= 2);
+            let full = b.selection_text();
+            assert_eq!(full, b.doc.blocks.iter().map(|b| b.text()).collect::<Vec<_>>().join("\n\n"));
+            let start_byte = full.find("Про пластмассу").unwrap();
+            let end_byte = full.find("третьего раздела.").unwrap() + "третьего раздела.".len();
+            let start = full[..start_byte].encode_utf16().count();
+            let end = full[..end_byte].encode_utf16().count();
+            let report = b.selection_report(start, end).unwrap();
+            let first = b.selection_offsets.partition_point(|&o| o <= start) - 1;
+            let last = b.selection_offsets.partition_point(|&o| o < end) - 1;
+            assert!(last > first + 5);
+            assert!(report.contains("Вторая глава"));
+            assert!(report.contains("Третья глава"));
+            for i in first..=last {
+                assert!(report.contains(&format!("Блок {i}, полный текст:")));
+                if !b.doc.blocks[i].text().is_empty() {
+                    assert!(report.contains(&format!("блок={i}, страница/глава=")), "no lines for block {i}");
+                }
+            }
+            let utf16: Vec<_> = full.encode_utf16().collect();
+            let mut previous_end = 0;
+            let mut selected_pages = 0;
+            for n in 0..b.page_count() {
+                let cells = b.selection_cells(n, 0.0, f32::MAX);
+                let mut has_selected = false;
+                for row in cells.lines() {
+                    let v: Vec<_> = row.split_whitespace().collect();
+                    let a: usize = v[0].parse().unwrap();
+                    let z: usize = v[1].parse().unwrap();
+                    assert!(a >= previous_end);
+                    previous_end = z;
+                    assert!(String::from_utf16(&utf16[a..z]).is_ok());
+                    has_selected |= a < end && z > start;
+                }
+                selected_pages += usize::from(has_selected);
+                let top = b.page(n).unwrap().height * 0.5;
+                let visible = b.selection_cells(n, top, 100.0);
+                for row in visible.lines() {
+                    let v: Vec<_> = row.split_whitespace().collect();
+                    assert!(v[3].parse::<f32>().unwrap() < top + 100.0);
+                    assert!(v[5].parse::<f32>().unwrap() > top);
+                }
+            }
+            assert!(selected_pages >= 3, "range must cross pages/chapters");
+            assert!(b.selection_report(0, 0).is_none());
+            assert!(b.selection_report(0, utf16.len() + 1).is_none());
+            assert!(b.selection_report(0, utf16.len()).is_some());
         }
     }
 

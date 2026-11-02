@@ -34,7 +34,9 @@ object Core {
     external fun close(h: Long)
     external fun title(h: Long): String?
     external fun blockAt(h: Long, page: Int, x: Float, y: Float): Int
-    external fun selectionCells(h: Long, page: Int, block: Int): String?
+    external fun selectionCells(h: Long, page: Int, top: Float, height: Float): String?
+    external fun selectionText(h: Long): String?
+    external fun selectionReport(h: Long, start: Int, end: Int): String?
     external fun blockText(h: Long, block: Int): String?
     external fun typographyReport(h: Long, block: Int): String?
     /** Название и авторы из файла без вёрстки: «название\nавтор1; автор2». */
